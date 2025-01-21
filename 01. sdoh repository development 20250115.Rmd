@@ -43,7 +43,7 @@ library(tidyverse)
 # Import ACS data
 ```{r pull ACS data from Census Bureau website}
 # establish Census API connection
-Sys.setenv(CENSUS_KEY= "...key...") # DO NOT SHARE THIS
+Sys.setenv(CENSUS_KEY= "aee7b281866941d1d77418ed939221a02d29ea97") # DO NOT SHARE THIS
 readRenviron("~/.Renviron")
 Sys.getenv("CENSUS_KEY")
 
@@ -145,8 +145,6 @@ B01001_clean <- B01001 %>%
          prop_age_18_to_64 = total_age_18_to_64/`Estimate!!Total:`,
          prop_age_over_64 = total_age_over_64/`Estimate!!Total:` ) %>%
   select(ZCTA,
-         #total_pop,
-         prop_male,
          prop_female,
          prop_age_under_18,
          prop_age_18_to_64,
@@ -180,11 +178,9 @@ B02001_clean <- B02001 %>%
 
 # hispanic/latino
 B03001_clean <-  B03001 %>%
-  mutate(prop_hispanic_latino = `Estimate!!Total:!!Hispanic or Latino:`/`Estimate!!Total:`,
-         prop_non_hispanic_latino = `Estimate!!Total:!!Not Hispanic or Latino`/`Estimate!!Total:`) %>%
+  mutate(prop_hispanic_latino = `Estimate!!Total:!!Hispanic or Latino:`/`Estimate!!Total:`) %>%
   select(ZCTA,
-         prop_hispanic_latino,
-         prop_non_hispanic_latino)
+         prop_hispanic_latino )
 
 # nativity and citizenship status
 B05001_clean <- B05001 %>%
@@ -192,24 +188,20 @@ B05001_clean <- B05001 %>%
          prop_not_citizen = `Estimate!!Total:!!Not a U.S. citizen`/total,
          prop_citizen = 1-prop_not_citizen) %>%
   select(ZCTA,
-         prop_citizen,
-         prop_not_citizen)
+         prop_citizen)
 
 # veteran status
 B21001_clean <- B21001 %>%
-  mutate(prop_veteran = `Estimate!!Total:!!Veteran`/`Estimate!!Total:`,
-         prop_nonveteran =`Estimate!!Total:!!Nonveteran`/`Estimate!!Total:`) %>%
+  mutate(prop_veteran = `Estimate!!Total:!!Veteran`/`Estimate!!Total:`) %>%
   select(ZCTA,
-         prop_veteran,
-         prop_nonveteran)
+         prop_veteran)
 
 # household type
 B11001_clean <- B11001 %>%
   mutate(prop_family_HH = `Estimate!!Total:!!Family households:`/`Estimate!!Total:`,
          prop_nonfamily_HH = `Estimate!!Total:!!Nonfamily households:`/`Estimate!!Total:`) %>%
   select(ZCTA,
-         prop_family_HH,
-         prop_nonfamily_HH)
+         prop_family_HH)
 
 # monthly housing costs
 B25104_clean <- B25104 %>%
@@ -261,7 +253,6 @@ B17001_clean <- B17001 %>%
   mutate(prop_at_or_above_poverty_level = `Estimate!!Total:!!Income in the past 12 months at or above poverty level:`/`Estimate!!Total:`,
          prop_below_poverty_level = `Estimate!!Total:!!Income in the past 12 months below poverty level:`/`Estimate!!Total:`) %>%
   select(ZCTA,
-         prop_at_or_above_poverty_level,
          prop_below_poverty_level)
 
 # ratio of income to poverty level in past 12 months
@@ -318,8 +309,7 @@ B22003_clean <- B22003 %>%
   mutate(prop_food_stamps = `Estimate!!Total:!!Household received Food Stamps/SNAP in the past 12 months:`/`Estimate!!Total:`,
          prop_no_food_stamps= `Estimate!!Total:!!Household did not receive Food Stamps/SNAP in the past 12 months:`/`Estimate!!Total:`) %>%
   select(ZCTA,
-         prop_food_stamps,
-         prop_no_food_stamps)
+         prop_food_stamps)
 
 # educational attainment for 18+
 B15001_clean <- B15001 %>%
@@ -369,8 +359,7 @@ B27001_clean <- B27001 %>%
   mutate(prop_health_insurance = total_health_insurance/`Estimate!!Total:`,
          prop_no_health_insurance = total_no_health_insurance/`Estimate!!Total:`) %>%
   select(ZCTA,
-         prop_health_insurance,
-         prop_no_health_insurance)
+         prop_health_insurance)
 
 # disability status
 B18101_clean <- B18101 %>%
@@ -379,8 +368,7 @@ B18101_clean <- B18101 %>%
   mutate(prop_disability = total_disability / `Estimate!!Total:`,
          prop_no_disability = total_no_disability / `Estimate!!Total:`) %>%
   select(ZCTA,
-         prop_disability,
-         prop_no_disability)
+         prop_disability)
 
 # limited English
 B16005_clean <- B16005 %>%
@@ -505,7 +493,7 @@ svi <- svi_file %>%
          EP_OTHERRACE = ifelse(EP_OTHERRACE < 0, NA, EP_OTHERRACE))
 
 ### get zip to tract mappings (from HUDUSER)
-key <- "...key..." # DO NOT SHARE THIS
+key <- "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6Ijk3ZjU2NzJlM2RlNDE4M2FhOGQxNDU1ZGE1ZmRlMWRiZWVjZDhlYTk5Y2U3OGM1Mzk0OTczYzk5M2Y3MDgzZjQyMjIzNjFjMjc5MGM3ODA4In0.eyJhdWQiOiI2IiwianRpIjoiOTdmNTY3MmUzZGU0MTgzYWE4ZDE0NTVkYTVmZGUxZGJlZWNkOGVhOTljZTc4YzUzOTQ5NzNjOTkzZjcwODNmNDIyMjM2MWMyNzkwYzc4MDgiLCJpYXQiOjE2OTUyMjQzMzksIm5iZiI6MTY5NTIyNDMzOSwiZXhwIjoyMDEwODQzNTM5LCJzdWIiOiI1OTAxNiIsInNjb3BlcyI6W119.IgOI1skJd3AiafuLvv8v3jVuFLHCQhKuAsWrDaRNRWrktcJ3j3JVo7TFpkRCisq0qEAJg7PspD7lHvdK_DXdsg" # DO NOT SHARE THIS
 url <- "https://www.huduser.gov/hudapi/public/usps"
 response <- httr::GET(url, query = list(type = 1, query="All"), httr::add_headers(Authorization = paste("Bearer", key)))
 
@@ -560,7 +548,7 @@ colnames(svi_zip) <- paste0("SVI_", colnames(svi_zip))
 #####################################################################
 
 ```{r create zip code table}
-### Map ZCTA to zip code to state
+### map ZCTA to zip code to state
 # import zcta to zip crosswalk from UDS Mapper (2021 version)
 zcta_to_zip_file <- readxl::read_excel("F:\\Data_Science\\SDoH\\Data\\ZIPCodetoZCTACrosswalk2021UDS.xlsx")
 zcta_to_zip <- zcta_to_zip_file %>%
@@ -568,6 +556,9 @@ zcta_to_zip <- zcta_to_zip_file %>%
   select(STATE,
          ZCTA,
          ZIP_CODE)
+
+### map state to region
+state_to_region_file <- readxl::read_excel("F:\\Data_Science\\SDoH\\Data\\state to region mapping 20250121.xlsx")
 
 table_zip <- acs %>%
   left_join(cdc, by="ZCTA") %>%
@@ -577,13 +568,19 @@ table_zip <- acs %>%
  
   left_join(svi_zip, by=c("ZIP_CODE" = "SVI_ZIP")) %>%
   
+  # add region
+  left_join(state_to_region_file, by="STATE") %>%
+  
   # reorder variables
-  relocate(STATE,
+  relocate(REGION,
+           STATE,
            ZIP_CODE) %>%
   select(-ZCTA) %>%
   filter(!is.na(ZIP_CODE)) 
 
 # save as RDS
-# saveRDS(table_zip, file = "F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_table 20240115.RDS")
+# saveRDS(table_zip, file = "F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_table 20240121.RDS")
 ```
+
+
 
