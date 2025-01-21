@@ -43,7 +43,7 @@ library(tidyverse)
 # Import ACS data
 ```{r pull ACS data from Census Bureau website}
 # establish Census API connection
-Sys.setenv(CENSUS_KEY= "aee7b281866941d1d77418ed939221a02d29ea97") # DO NOT SHARE THIS
+Sys.setenv(CENSUS_KEY= "key") # DO NOT SHARE THIS
 readRenviron("~/.Renviron")
 Sys.getenv("CENSUS_KEY")
 
@@ -493,7 +493,7 @@ svi <- svi_file %>%
          EP_OTHERRACE = ifelse(EP_OTHERRACE < 0, NA, EP_OTHERRACE))
 
 ### get zip to tract mappings (from HUDUSER)
-key <- "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6Ijk3ZjU2NzJlM2RlNDE4M2FhOGQxNDU1ZGE1ZmRlMWRiZWVjZDhlYTk5Y2U3OGM1Mzk0OTczYzk5M2Y3MDgzZjQyMjIzNjFjMjc5MGM3ODA4In0.eyJhdWQiOiI2IiwianRpIjoiOTdmNTY3MmUzZGU0MTgzYWE4ZDE0NTVkYTVmZGUxZGJlZWNkOGVhOTljZTc4YzUzOTQ5NzNjOTkzZjcwODNmNDIyMjM2MWMyNzkwYzc4MDgiLCJpYXQiOjE2OTUyMjQzMzksIm5iZiI6MTY5NTIyNDMzOSwiZXhwIjoyMDEwODQzNTM5LCJzdWIiOiI1OTAxNiIsInNjb3BlcyI6W119.IgOI1skJd3AiafuLvv8v3jVuFLHCQhKuAsWrDaRNRWrktcJ3j3JVo7TFpkRCisq0qEAJg7PspD7lHvdK_DXdsg" # DO NOT SHARE THIS
+key <- "key" # DO NOT SHARE THIS
 url <- "https://www.huduser.gov/hudapi/public/usps"
 response <- httr::GET(url, query = list(type = 1, query="All"), httr::add_headers(Authorization = paste("Bearer", key)))
 
