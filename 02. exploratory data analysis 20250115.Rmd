@@ -17,7 +17,8 @@ library(ggplot2)
 library(moments)
 ```
 
-```{r import data}
+# 01. Import Data
+```{r 01. import data}
 sdoh_zip <- readRDS("F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_table 20240121.RDS")
 # sdoh_zip <- table_zip
 
@@ -28,8 +29,8 @@ str(sdoh_zip)
 cat("Number of rows:", nrow(sdoh_zip), "\n")
 cat("Number of columns:", ncol(sdoh_zip), "\n")
 ```
-
-```{r data cleaning}
+# 02. Data Cleaning
+```{r 02. data cleaning}
 sdoh_zip_clean <- sdoh_zip %>%
   
   # convert categorical variables to factors
@@ -42,7 +43,8 @@ sdoh_zip_clean <- sdoh_zip %>%
   distinct()
 ```
 
-```{r missing data analysis}
+# 03. Missing Data Analysis
+```{r 03. missing data analysis}
 # table with missing counts and frequency
 missing_summary <- data.frame(
   column = colnames(sdoh_zip_clean),
@@ -62,8 +64,8 @@ ggplot(missing_summary, aes(x = reorder(column, -missing_percentage), y = missin
            y = "Percentage Missing") +
       scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
 ```
-
-```{r univariate analysis}
+# 04. Univariate Analysis
+```{r 04. univariate analysis}
 ################################################
 ############### numeric features ###############
 ################################################
@@ -104,6 +106,7 @@ skew_kurt_results <- data.frame(
          kurtosis_flag = ifelse(kurtosis < 3.5 & kurtosis > 2.5, 1, 0),
          normal_flag = ifelse(skewed_flag == 1 & kurtosis_flag == 1, 1, 0)) %>%
   arrange(desc(normal_flag))
+skew_kurt_results
 
 # outlier detection: modified z-score method, and bar graph summary
 outliers <- numeric_data %>%
@@ -126,6 +129,7 @@ outliers_summary <- outliers %>%
   summarise(outlier_count = n(),
             outlier_percent = round(n()/nrow(numeric_data), 2)) %>%
   arrange(desc(outlier_count))
+outliers_summary
 
 ggplot(outliers_summary %>% head(20), aes(x = reorder(variable, -outlier_percent), y = outlier_percent)) +
       geom_bar(stat = "identity", fill = "darksalmon") +
@@ -173,8 +177,8 @@ ggplot(freq_table %>% filter(outlier == 1), aes(x = reorder(STATE, -percentage),
            y = "Occurence Percentage") +
       scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
 ```
-
-```{r bivariate analysis}
+# 05. Bivariate Analysis
+```{r 05. bivariate analysis}
 #########################################################
 ############### continuous vs. continuous ###############
 #########################################################
@@ -184,6 +188,7 @@ ggplot(freq_table %>% filter(outlier == 1), aes(x = reorder(STATE, -percentage),
 # select only complete cases 
 numeric_data_complete <- numeric_data %>%
   filter(complete.cases(.))
+cat("Number of rows removed due to having missing obs.: \n")
 (nrow(numeric_data_complete) - nrow(numeric_data))/nrow(numeric_data) # 23.97% of obs. removed
 
 # function that creates table for highly-correlated pairs
@@ -210,6 +215,7 @@ get_high_correlations <- function(cor_matrix) {
 # Pearson correlation matrix
 cor_matrix <- cor(numeric_data_complete, use = "complete.obs", method = "pearson")
 high_cor <- get_high_correlations(cor_matrix)
+high_cor
 
 ## scatterplots: patterns, trends, outliers, linearity
 
@@ -352,10 +358,14 @@ for (col in setdiff(names(region_data), "REGION")) {
   # mosaic plot (graphically represents contingency table)
 ```
 
-```{r multivariate analysis}
+# 06. Multivariate Analysis
+```{r 06. multivariate analysis}
 # testing for interactions
 
-### outcome: ACCESS ###
+###############################################
+############### outcome: ACCESS ###############
+###############################################
+
 access_data <- sdoh_zip_clean %>%
   select(CDC_ACCESS2,
          REGION,
@@ -386,55 +396,90 @@ access_interaction_results <- do.call(rbind, lapply(seq_along(access_interaction
   }
 }))
 
-# Filter significant interactions (e.g., p-value < 0.05)
+# include only significant interactions (p-value < 0.05)
 access_significant_interactions <- subset(access_interaction_results, p_value < 0.05)
-significant_interactions
+access_significant_interactions
 
-# visualize significant interactions
-ggplot(access_data, aes(x = ACS_prop_race_alone_asian, y = CDC_ACCESS2, color = factor(ACS_prop_hispanic_latino > mean(ACS_prop_hispanic_latino)))) +
-  geom_point() +
-  geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
-  labs(title = "Interaction Between var1 and var2", color = "High/Low var2")
+# create interaction plots between region and features with relationship with access
+for (col in setdiff(names(access_data), c("CDC_ACCESS2", "REGION"))) {
+  data <- access_data %>%
+    # bucket feature into 10 buckets
+    mutate(buckets = cut(!!sym(col), breaks = 10)) %>%
+    group_by(REGION, buckets) %>%
+    summarise(mean_access = mean(CDC_ACCESS2, na.rm = TRUE))  
 
-# Load ggplot2
-library(ggplot2)
+  interaction_plot <- ggplot(data, aes(x = buckets, y = mean_access, group = REGION, color = REGION)) +
+    geom_line(size = 1) +
+    labs(
+      title = "Interaction Plot",
+      x = col,
+      y = "Mean Proportion Access",
+      color = "Region"
+    ) +
+    theme_minimal()
+  
+   print(interaction_plot)
+}
 
-# Create an interaction plot
+#################################################
+############### outcome: DIABETES ###############
+#################################################
 
-# Define bins with specific breaks
-breaks <- cut(access_data$ACS_prop_race_alone_asian, breaks = 10)
+diabetes_data <- sdoh_zip_clean %>%
+  select(CDC_DIABETES,
+         REGION,
+         all_of(diabetes_features))
 
-# View the data
-head(data)
+# identify all possible interactions
+diabetes_interactions <- combn(diabetes_features, 2, simplify = FALSE)
 
-data <- access_data %>%
-  mutate(bucket = breaks) %>%
-  group_by(REGION, bucket) %>%
-  summarise(mean_access = mean(CDC_ACCESS2))
+# loop through interactions and fit models
+diabetes_results <- lapply(diabetes_interactions, function(features) {
+  formula = as.formula(paste("CDC_DIABETES ~", paste(features, collapse = " * ")))
+  model <- lm(formula, data = diabetes_data)
+  summary(model)$coefficients
+})
 
-ggplot(data, aes(x = bucket, y = mean_access, group = REGION, color = REGION)) +
-  geom_line(size = 1) +
-  labs(
-    title = "Interaction Plot",
-    x = "Var2 (Group)",
-    y = "Mean Response",
-    color = "Var1 (Level)"
-  ) +
-  theme_minimal()
+# combine results into a data frame
+diabetes_interaction_results <- do.call(rbind, lapply(seq_along(diabetes_interactions), function(i) {
+  interaction <- paste(diabetes_interactions[[i]], collapse = ":")
+  coeff <- diabetes_results[[i]]
+  if (interaction %in% rownames(coeff)) {
+    data.frame(
+      interaction = interaction,
+      estimate = coeff[interaction, "Estimate"],
+      p_value = coeff[interaction, "Pr(>|t|)"]
+    )
+  } else {
+    NULL
+  }
+}))
 
+# include only significant interactions (p-value < 0.05)
+diabetes_significant_interactions <- subset(diabetes_interaction_results, p_value < 0.05)
+diabetes_significant_interactions
 
+# create interaction plots between region and features with relationship with diabetes
+for (col in setdiff(names(diabetes_data), c("CDC_DIABETES", "REGION"))) {
+  data <- diabetes_data %>%
+    # bucket feature into 10 buckets
+    mutate(buckets = cut(!!sym(col), breaks = 10)) %>%
+    group_by(REGION, buckets) %>%
+    summarise(mean_diabetes = mean(CDC_DIABETES, na.rm = TRUE))  
 
+  interaction_plot <- ggplot(data, aes(x = buckets, y = mean_diabetes, group = REGION, color = REGION)) +
+    geom_line(size = 1) +
+    labs(
+      title = "Interaction Plot",
+      x = col,
+      y = "Mean Proportion Diabetes",
+      color = "Region"
+    ) +
+    theme_minimal()
+  
+   print(interaction_plot)
+}
 
-
-
-
-
-
-
-
-
-### outcome: DIABETES ###
-diabetes_features
 ```
 
 
