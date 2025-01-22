@@ -1,0 +1,338 @@
+---
+title: "SDoH Exploratory Data Analysis"
+author: "Carina Korcel"
+date: "2025-01-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r call libraries}
+library(tidyverse)
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(moments)
+```
+
+```{r import data}
+sdoh_zip <- readRDS("F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_table 20240121.RDS")
+# sdoh_zip <- table_zip
+
+# view data structure
+str(sdoh_zip)
+
+# dimensions of the dataset
+cat("Number of rows:", nrow(sdoh_zip), "\n")
+cat("Number of columns:", ncol(sdoh_zip), "\n")
+```
+
+```{r data cleaning}
+sdoh_zip_clean <- sdoh_zip %>%
+  
+  # convert categorical variables to factors
+  mutate_if(is.character, as.factor) %>%
+  
+  # remove duplicate rows
+  distinct()
+```
+
+```{r missing data analysis}
+# table with missing counts and frequency
+missing_summary <- data.frame(
+  column = colnames(sdoh_zip_clean),
+  missing_count = sapply(sdoh_zip_clean, function(x) sum(is.na(x))),
+  missing_percentage = round(sapply(sdoh_zip_clean, function(x) mean(is.na(x)) * 100), 2)
+  ) %>%
+  arrange(desc(missing_percentage))
+missing_summary
+
+# bar graph: % of missing values by feature
+ggplot(missing_summary, aes(x = reorder(column, -missing_percentage), y = missing_percentage)) +
+      geom_bar(stat = "identity", fill = "darksalmon") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      labs(title = "Percentage of Missing Values by Variable",
+           x = "Variables",
+           y = "Percentage Missing") +
+      scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
+```
+
+```{r univariate analysis}
+################################################
+############### numeric features ###############
+################################################
+
+# select numeric features
+numeric_data <- sdoh_zip_clean %>% select_if(is.numeric)
+
+# summary statistics: measures of center and spread
+summary(numeric_data)
+
+# distribution visualizations/checking for normality
+for (col in colnames(numeric_data)) {
+  # histogram
+  histogram <- ggplot(numeric_data, aes_string(x = col)) +
+    geom_histogram(binwidth = .02, fill = "skyblue", color = "black", alpha = 0.7) +
+    labs(x = col, y = "Count")
+    theme_minimal()
+  print(histogram)
+  
+  # Q-Q plot
+  qqnorm(numeric_data[[col]], main = paste("Q-Q Plot for", col))
+  qqline(numeric_data[[col]], col = "blue")
+}
+
+# checking normality assumptions
+
+#   visual checks: histogram (above), Q-Q plot
+
+#   statistical tests (sample size too large to coduct meaningful tests)
+
+#   skewness and kurtosis
+skew_kurt_results <- data.frame(
+  feature = colnames(numeric_data),
+  skewness = round(sapply(numeric_data, skewness, na.rm = TRUE), 2),
+  kurtosis = round(sapply(numeric_data, kurtosis, na.rm = TRUE), 2)
+) %>%
+  mutate(skewed_flag = ifelse(abs(skewness) < 1, 1, 0),
+         kurtosis_flag = ifelse(kurtosis < 3.5 & kurtosis > 2.5, 1, 0),
+         normal_flag = ifelse(skewed_flag == 1 & kurtosis_flag == 1, 1, 0)) %>%
+  arrange(desc(normal_flag))
+
+# outlier detection: modified z-score method, and bar graph summary
+outliers <- numeric_data %>%
+    rowid_to_column("row_index") %>%  # add row ids
+    pivot_longer(cols = -row_index, names_to = "variable", values_to = "value") %>%  
+    group_by(variable) %>%  
+    mutate(median = median(value, na.rm = TRUE),
+           mad = mad(value, constant = 1, na.rm = TRUE),
+           modified_z = 0.6745 * (value - median) / mad) %>%
+    filter(abs(modified_z) > 3.5) %>%  # outlier = abs(modified z-score > 3.5)
+    select(variable, 
+           row_index, 
+           value, 
+           modified_z) %>%
+  arrange(variable,
+          value)
+
+outliers_summary <- outliers %>%
+  group_by(variable) %>%
+  summarise(outlier_count = n(),
+            outlier_percent = round(n()/nrow(numeric_data), 2)) %>%
+  arrange(desc(outlier_count))
+
+ggplot(outliers_summary %>% head(20), aes(x = reorder(variable, -outlier_percent), y = outlier_percent)) +
+      geom_bar(stat = "identity", fill = "darksalmon") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      labs(title = "Percentage of Outliers by Feature",
+           x = "Features",
+           y = "Percentage Outliers") +
+      scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
+
+####################################################
+############### categorical features ###############
+####################################################
+
+# select categorical features
+categorical_data <- sdoh_zip_clean %>% select_if(is.factor)
+
+# summary statistics: frequency tables
+map(categorical_data, table)
+
+# distribution visualizations: bar graphs
+for (col in colnames(categorical_data %>% select(STATE, REGION))) {
+  barplot <- ggplot(categorical_data %>% select(STATE, REGION), aes_string(x = col)) +
+    geom_bar(fill = "skyblue", alpha = 0.7) +
+    labs(x = col, y = "Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7))
+  print(barplot)
+}
+
+# outlier detection: <5% frequency method
+freq_table <- categorical_data %>%
+  group_by(STATE) %>%
+  summarise(count = n(),
+            percentage = round(count/nrow(categorical_data), 2),
+            outlier = ifelse(percentage < 0.05, 1, 0)) %>%
+  arrange(percentage)
+
+ggplot(freq_table %>% filter(outlier == 1), aes(x = reorder(STATE, -percentage), y = percentage)) +
+      geom_bar(stat = "identity", fill = "darksalmon") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      labs(title = "States with <5% Occurrence",
+           x = "State",
+           y = "Occurence Percentage") +
+      scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
+```
+
+```{r bivariate analysis}
+#########################################################
+############### continuous vs. continuous ###############
+#########################################################
+
+## correlation coefficients: relationship strength and direction
+
+# select only complete cases 
+numeric_data_complete <- numeric_data %>%
+  filter(complete.cases(.))
+(nrow(numeric_data_complete) - nrow(numeric_data))/nrow(numeric_data) # 23.97% of obs. removed
+
+# function that creates table for highly-correlated pairs
+get_high_correlations <- function(cor_matrix) {
+  
+  # create logical matrix to indetify correlations > 0.8
+  high_correlations <- abs(cor_matrix) > 0.8
+  # set diagonal to FALSE
+  diag(high_correlations) <- FALSE
+  # extract high correlation indices
+  high_cor_indices <- which(high_correlations, arr.ind = TRUE)
+  
+  high_cor_pairs <- data.frame(
+    var1 = rownames(cor_matrix)[high_cor_indices[,1]],
+    var2 = colnames(cor_matrix)[high_cor_indices[,2]],
+    correlation = cor_matrix[high_cor_indices]
+  ) %>%
+    arrange(desc(abs(correlation))) %>%
+    distinct(correlation, .keep_all = TRUE)
+  
+  print(high_cor_pairs)
+}
+
+# Pearson correlation matrix
+cor_matrix <- cor(numeric_data_complete, use = "complete.obs", method = "pearson")
+high_cor <- get_high_correlations(cor_matrix)
+
+## scatterplots: patterns, trends, outliers, linearity
+
+# downsample the data to reduce computation time for scatterplots
+set.seed(123)
+numeric_data_sample <- numeric_data[sample(nrow(numeric_data), size = 0.3 * nrow(numeric_data)), ] # 12,252 rows
+
+# create scatterplots (focusing on access and cancer outcomes)
+# (note: must reduce dimensionality, otherwise computationally intensive to make every scatterplot)
+
+### outcome: ACCESS ###
+feature <- "CDC_ACCESS2"
+feature_list <- setdiff(names(numeric_data), feature)
+final_feature_list <- colnames(numeric_data %>%
+                                 select(ACS_prop_race_alone_asian,
+                                        ACS_prop_hispanic_latino,
+                                        ACS_prop_housing_greater_than_3000,
+                                        ACS_prop_poverty_ratio_under_1.50,
+                                        ACS_median_HH_income,
+                                        ACS_prop_no_HS_diploma,
+                                        ACS_prop_bachelors_degree,
+                                        ACS_prop_graduate_degree_or_above,
+                                        ACS_prop_car_truck_van,
+                                        ACS_prop_WFH))
+
+for (col in final_feature_list) {
+  scatterplot <- ggplot(numeric_data_sample, aes_string(x = feature, y = col)) +
+    geom_point(color = "blue", size = 2, alpha = 0.7) +
+    labs(title = paste("Scatterplot of", feature, "vs", col),
+         x = feature,
+         y = col) +
+    theme_minimal()
+  
+  print(scatterplot)
+}
+
+### outcome: DIABETES ###
+feature <- "CDC_DIABETES"
+feature_list <- setdiff(names(numeric_data), feature)
+final_feature_list <- colnames(numeric_data %>%
+                                 select(ACS_prop_age_over_64,
+                                        ACS_prop_race_alone_white,
+                                        ACS_prop_race_alone_black,
+                                        ACS_prop_housing_less_than_500,
+                                        ACS_prop_employed,
+                                        ACS_prop_poverty_ratio_under_1.50,
+                                        ACS_prop_food_stamps,
+                                        ACS_median_HH_income,
+                                        ACS_prop_no_HS_diploma,
+                                        ACS_prop_bachelors_degree,
+                                        ACS_prop_graduate_degree_or_above,
+                                        ACS_prop_car_truck_van,
+                                        ACS_prop_WFH,
+                                        ACS_prop_no_internet))
+
+for (col in final_feature_list) {
+  scatterplot <- ggplot(numeric_data_sample, aes_string(x = feature, y = col)) +
+    geom_point(color = "blue", size = 2, alpha = 0.7) +
+    labs(title = paste("Scatterplot of", feature, "vs", col),
+         x = feature,
+         y = col) +
+    theme_minimal()
+  
+  print(scatterplot)
+}
+
+##########################################################
+############### continuous vs. categorical ###############
+##########################################################
+
+categorical_data
+
+## boxplots/violin plots
+
+## bar graph?
+
+## ANOVA?
+
+## density plot?
+
+###########################################################
+############### categorical vs. categorical ###############
+###########################################################
+
+# this does not apply to this data set
+
+# examples:
+
+  # contingency table/cross tabulation
+  # stacked bar graph
+  # chi-square test of independent (testing for significant association)
+  # mosaic plot (graphically represents contingency table)
+
+##################################################
+############### check assumptions? ###############
+##################################################
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+# 9. Feature Engineering ------------------------------------------------------
+
+# Create new features (e.g., interaction terms, aggregations, etc.)
+# sdoh_zip_clean <- sdoh_zip_clean %>%
+  # mutate(new_feature = numeric_variable1 * numeric_variable2)
+
+
+
+# 11. Export Cleaned Data -----------------------------------------------------
+
+# Save the cleaned dataset for further analysis
+# write.csv(sdoh_zip_clean, "cleaned_data.csv", row.names = FALSE)
+
+
+
+# saveRDS(summary_missing, file = paste0("F:\\Data_Science\\Hospice_EHR_Model\\Data\\0. raw\\ADS_",dataset,"_QA_",version_date,".RDS"))
+```
+
