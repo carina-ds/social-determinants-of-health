@@ -35,6 +35,9 @@ sdoh_zip_clean <- sdoh_zip %>%
   # convert categorical variables to factors
   mutate_if(is.character, as.factor) %>%
   
+  # remove Puerto Rico 
+  filter(STATE != "PR") %>%
+  
   # remove duplicate rows
   distinct()
 ```
@@ -243,6 +246,9 @@ for (col in final_feature_list) {
   print(scatterplot)
 }
 
+# store features important to access outcome
+access_features <- final_feature_list
+
 ### outcome: DIABETES ###
 feature <- "CDC_DIABETES"
 feature_list <- setdiff(names(numeric_data), feature)
@@ -273,19 +279,64 @@ for (col in final_feature_list) {
   print(scatterplot)
 }
 
+# store feature important to diabetes outcome
+diabetes_features <- final_feature_list
+
 ##########################################################
 ############### continuous vs. categorical ###############
 ##########################################################
 
-categorical_data
+# (note: comparing REGION to numeric features)
+
+region_data <- sdoh_zip_clean %>%
+  select(-STATE,
+         -ZIP_CODE) %>%
+  
+  # select features that have potential relationship with region
+  select(REGION,
+         ACS_prop_citizen,
+         ACS_prop_race_two_or_more,
+         ACS_prop_race_alone_white,
+         ACS_prop_race_alone_black,
+         ACS_prop_minority,
+         ACS_prop_hispanic_latino,
+         ACS_prop_poverty_ratio_under_1.50,
+         ACS_prop_health_insurance,
+         CDC_ACCESS2,
+         CDC_DIABETES)
 
 ## boxplots/violin plots
 
-## bar graph?
+for (col in setdiff(names(region_data), "REGION")) {
+  box_violin_plot <- ggplot(region_data, aes(x = REGION, y = .data[[col]], fill = REGION)) +
+    geom_violin(alpha = 0.4, color = "black", trim = TRUE) +
+    geom_boxplot(width = 0.2, alpha = 0.7, color = "black", outlier.shape = NA) +
+    labs(title = paste("Violin and Boxplot of", col, "by Region"),
+         x = "Region",
+         y = col) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(box_violin_plot)
+}
 
-## ANOVA?
+## ANOVA test: testing for significant difference in means across regions for selected features above
 
-## density plot?
+# (note: assumes normality, homoscedasticity, independence)
+# (note: sensitive to outliers, designed for linear relationships)
+
+anova_results <- list()
+
+for (col in setdiff(names(region_data), "REGION")) {
+  # create dynamic formula
+  formula <- as.formula(paste(col, "~ REGION"))
+  
+  anova_results[[col]] <- summary(anova_result)
+  
+  # print results
+  cat("\nANOVA for", col, "\n")
+  print(summary(anova_result))
+}
 
 ###########################################################
 ############### categorical vs. categorical ###############
@@ -299,18 +350,92 @@ categorical_data
   # stacked bar graph
   # chi-square test of independent (testing for significant association)
   # mosaic plot (graphically represents contingency table)
-
-##################################################
-############### check assumptions? ###############
-##################################################
-
-
-
-
-
-
 ```
 
+```{r multivariate analysis}
+# testing for interactions
+
+### outcome: ACCESS ###
+access_data <- sdoh_zip_clean %>%
+  select(CDC_ACCESS2,
+         REGION,
+         all_of(access_features))
+
+# identify all possible interactions
+access_interactions <- combn(access_features, 2, simplify = FALSE)
+
+# loop through interactions and fit models
+access_results <- lapply(access_interactions, function(features) {
+  formula = as.formula(paste("CDC_ACCESS2 ~", paste(features, collapse = " * ")))
+  model <- lm(formula, data = access_data)
+  summary(model)$coefficients
+})
+
+# combine results into a data frame
+access_interaction_results <- do.call(rbind, lapply(seq_along(access_interactions), function(i) {
+  interaction <- paste(access_interactions[[i]], collapse = ":")
+  coeff <- access_results[[i]]
+  if (interaction %in% rownames(coeff)) {
+    data.frame(
+      interaction = interaction,
+      estimate = coeff[interaction, "Estimate"],
+      p_value = coeff[interaction, "Pr(>|t|)"]
+    )
+  } else {
+    NULL
+  }
+}))
+
+# Filter significant interactions (e.g., p-value < 0.05)
+access_significant_interactions <- subset(access_interaction_results, p_value < 0.05)
+significant_interactions
+
+# visualize significant interactions
+ggplot(access_data, aes(x = ACS_prop_race_alone_asian, y = CDC_ACCESS2, color = factor(ACS_prop_hispanic_latino > mean(ACS_prop_hispanic_latino)))) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  labs(title = "Interaction Between var1 and var2", color = "High/Low var2")
+
+# Load ggplot2
+library(ggplot2)
+
+# Create an interaction plot
+
+# Define bins with specific breaks
+breaks <- cut(access_data$ACS_prop_race_alone_asian, breaks = 10)
+
+# View the data
+head(data)
+
+data <- access_data %>%
+  mutate(bucket = breaks) %>%
+  group_by(REGION, bucket) %>%
+  summarise(mean_access = mean(CDC_ACCESS2))
+
+ggplot(data, aes(x = bucket, y = mean_access, group = REGION, color = REGION)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Interaction Plot",
+    x = "Var2 (Group)",
+    y = "Mean Response",
+    color = "Var1 (Level)"
+  ) +
+  theme_minimal()
+
+
+
+
+
+
+
+
+
+
+
+
+### outcome: DIABETES ###
+diabetes_features
+```
 
 
 
