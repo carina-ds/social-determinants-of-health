@@ -150,7 +150,7 @@ ggplot(outliers_summary %>% head(20), aes(x = reorder(variable, -outlier_percent
 categorical_data <- sdoh_zip_clean %>% select_if(is.factor)
 
 # summary statistics: frequency tables
-map(categorical_data, table)
+map(categorical_data %>% select(-ZIP_CODE), table)
 
 # distribution visualizations: bar graphs
 for (col in colnames(categorical_data %>% select(STATE, REGION))) {

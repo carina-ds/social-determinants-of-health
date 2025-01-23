@@ -1,0 +1,437 @@
+---
+title: "03. model building"
+author: "Carina Korcel"
+date: "2025-01-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r call libraries}
+library(dplyr)
+library(fastDummies)
+library(car)
+library(glmnet)
+
+# set option to prevent scientific notation
+options(scipen = 999)
+```
+
+```{r import data, select features}
+# import data
+sdoh_data <- readRDS(sdoh_zip_clean, file = "F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_clean 20250123.RDS")
+
+# select features
+diabetes_features <- c("CDC_DIABETES",
+                       "REGION",
+                       "ACS_prop_age_over_64",
+                       "ACS_prop_race_alone_white",
+                       "ACS_prop_race_alone_black",
+                       "ACS_prop_housing_less_than_500",
+                       "ACS_prop_employed",
+                       "ACS_prop_poverty_ratio_under_1.50",
+                       "ACS_prop_food_stamps",
+                       "ACS_median_HH_income",
+                       "ACS_prop_no_HS_diploma",
+                       "ACS_prop_bachelors_degree",
+                       "ACS_prop_graduate_degree_or_above",
+                       "ACS_prop_car_truck_van",
+                       "ACS_prop_WFH",
+                       "ACS_prop_no_internet")
+
+diabetes_data <- sdoh_data %>%
+  # select features from EDA
+  select(all_of(diabetes_features)) %>%
+  rename(region = REGION) %>%
+  # missing data treatment - remove entire row
+  filter(complete.cases(.))
+
+paste("number of rows removed (missing obs.):", nrow(sdoh_data) - nrow(diabetes_data))
+```
+
+```{r dummy coding}
+# create dummy variables    
+diabetes_data <- fastDummies::dummy_cols(diabetes_data, select_columns = "region", remove_first_dummy = TRUE) %>%
+  select(-region)
+```
+
+```{r split into training, testing, and holdout sets}
+# set seed for reproducibility
+set.seed(123)
+
+# split proportions
+train_prop <- 0.7
+test_prop <- 0.15
+
+# create random number column for splitting
+diabetes_data <- diabetes_data %>% mutate(random_split = runif(n()))
+
+# create splits
+train <- diabetes_data %>% 
+  filter(random_split <= train_prop) %>%
+  select(-random_split)
+test <- diabetes_data %>% 
+  filter(random_split > train_prop & random_split <= train_prop + test_prop) %>%
+  select(-random_split)
+holdout <- diabetes_data %>% 
+  filter(random_split > train_prop + test_prop) %>%
+  select(-random_split)
+
+# ensure sizes are expected
+print("number of rows (train):")
+nrow(train)
+print("number of rows (test):")
+nrow(test)
+print("number of rows (holdout):")
+nrow(holdout)
+```
+
+```{r select evaluation metric}
+# initialize an empty table to store models and respective MSE
+mse_table <- data.frame(
+  model = character(),
+  mse = numeric(),
+  normalized_mse = numeric()
+)
+```
+
+```{r model building - linear regression}
+# features selective after iterative testing
+train_subset <- train %>%
+  select(-ACS_prop_race_alone_white,
+         -ACS_prop_poverty_ratio_under_1.50)
+
+# fit linear regression model
+model <- lm(CDC_DIABETES ~ ., data = train_subset)
+summary(model)
+
+# check for multicollinearity
+car::vif(model)
+
+# calculate MSE and add to MSE table
+predicted <- predict(model, test)
+mse_value <- round(mean((test$CDC_DIABETES - predicted)^2), 4)
+mse_table <- rbind(mse_table, data.frame(model = "linear regression", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+
+```{r model building - quadratic regression}
+# create new features that are squared
+train_quadratic <- train_subset %>%
+  mutate(housing2 = ACS_prop_housing_less_than_500^2,
+         income2 = ACS_median_HH_income^2,
+         graduate2 = ACS_prop_graduate_degree_or_above^2
+         # white2 = ACS_prop_race_alone_white^2
+         )
+test_quadratic <- test %>%
+  mutate(housing2 = ACS_prop_housing_less_than_500^2,
+         income2 = ACS_median_HH_income^2,
+         graduate2 = ACS_prop_graduate_degree_or_above^2
+         # white2 = ACS_prop_race_alone_white^2
+         )
+
+# fit a quadratic regression model
+model <- lm(CDC_DIABETES ~ ., data = train_quadratic)
+summary(model)
+
+# calculate MSE and add to MSE table
+predicted <- predict(model, test_quadratic)
+mse_value <- round(mean((test_quadratic$CDC_DIABETES - predicted)^2), 4)
+mse_table <- rbind(mse_table, data.frame(model = "quadratic regression", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test_quadratic$CDC_DIABETES), 4)))
+mse_table
+```
+
+```{r model building - linear regression with interactions}
+# fit linear regression model with interactions
+model <- lm(CDC_DIABETES ~ . + 
+              # region_Northeast * ACS_prop_age_over_64 +
+              # region_South * ACS_prop_age_over_64 +
+              # region_West * ACS_prop_age_over_64 
+              
+              # region_Northeast * ACS_prop_race_alone_black +
+              # region_South * ACS_prop_race_alone_black +
+              # region_West * ACS_prop_race_alone_black 
+
+              region_Northeast * ACS_prop_age_over_64 +
+              region_South * ACS_prop_age_over_64 +
+              region_West * ACS_prop_age_over_64
+            ,
+            data = train_subset)
+summary(model)
+
+# calculate MSE and add to MSE table
+predicted <- predict(model, test)
+mse_value <- round(mean((test$CDC_DIABETES - predicted)^2), 4)
+mse_table <- rbind(mse_table, data.frame(model = "linear regression with interaction", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+
+```{r model building - lasso regression }
+# create predictor matrix
+X_train <- data.matrix(train %>% select(-CDC_DIABETES))
+y_train <- train$CDC_DIABETES
+X_test <- data.matrix(test %>% select(-CDC_DIABETES))
+y_test <- test$CDC_DIABETES
+
+# fit lasso regression model
+model <- glmnet(x = X_train,
+                y = y_train, 
+                alpha = 1) # alpha = 1 specifies lasso regression
+
+# cross-validation to select optimal lambda
+cv <- cv.glmnet(x = X_train,
+                y = y_train, 
+                alpha = 1, 
+                nfolds = 10) # 10-fold cv
+plot(cv)
+best_lambda <- cv$lambda.min
+cat("optimal lambda:", best_lambda, "\n")
+
+# refit model with optimal lambda
+final_model <- glmnet(x = X_train,
+                      y = y_train,
+                      alpha = 1, 
+                      lambda = best_lambda)
+coef(final_model)
+
+# make predictions on test set
+predictions <- predict(final_model, 
+                       s = best_lambda, 
+                       newx = X_test)
+
+# calculate MSE and add to MSE table
+mse_value <- mean((y_test - predictions)^2)
+cat("Test MSE:", mse_value, "\n")
+mse_table <- rbind(mse_table, data.frame(model = "lasso regression", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+
+```{r model building - ridge regression}
+# create predictor matrix
+X_train <- data.matrix(train %>% select(-CDC_DIABETES))
+y_train <- train$CDC_DIABETES
+X_test <- data.matrix(test %>% select(-CDC_DIABETES))
+y_test <- test$CDC_DIABETES
+
+# fit lasso regression model
+model <- glmnet(x = X_train,
+                y = y_train, 
+                alpha = 0) # alpha = 0 specifies ridge regression
+
+# cross-validation to select optimal lambda
+cv <- cv.glmnet(x = X_train,
+                y = y_train, 
+                alpha = 0, 
+                nfolds = 10) # 10-fold cv
+plot(cv)
+best_lambda <- cv$lambda.min
+cat("optimal lambda:", best_lambda, "\n")
+
+# refit model with optimal lambda
+final_model <- glmnet(x = X_train,
+                      y = y_train,
+                      alpha = 0, 
+                      lambda = best_lambda)
+coef(final_model)
+
+# make predictions on test set
+predictions <- predict(final_model, 
+                       s = best_lambda, 
+                       newx = X_test)
+
+# calculate MSE and add to MSE table
+mse_value <- mean((y_test - predictions)^2)
+cat("Test MSE:", mse_value, "\n")
+mse_table <- rbind(mse_table, data.frame(model = "ridge regression", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+
+```{r model building - elastic net regression}
+# create predictor matrix
+X_train <- data.matrix(train %>% select(-CDC_DIABETES))
+y_train <- train$CDC_DIABETES
+X_test <- data.matrix(test %>% select(-CDC_DIABETES))
+y_test <- test$CDC_DIABETES
+
+# fit lasso regression model
+model <- glmnet(x = X_train,
+                y = y_train, 
+                alpha = 0.5) # alpha between 0 and 1: elastic net
+
+# cross-validation to select optimal lambda
+cv <- cv.glmnet(x = X_train,
+                y = y_train, 
+                alpha = 0.5, 
+                nfolds = 10) # 10-fold cv
+plot(cv)
+best_lambda <- cv$lambda.min
+cat("optimal lambda:", best_lambda, "\n")
+
+# refit model with optimal lambda
+final_model <- glmnet(x = X_train,
+                      y = y_train,
+                      alpha = 0.5, 
+                      lambda = best_lambda)
+coef(final_model)
+
+# make predictions on test set
+predictions <- predict(final_model, 
+                       s = best_lambda, 
+                       newx = X_test)
+
+# calculate MSE and add to MSE table
+mse_value <- mean((y_test - predictions)^2)
+cat("Test MSE:", mse_value, "\n")
+mse_table <- rbind(mse_table, data.frame(model = "elastic net regression", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+
+```
+```{r model building - decision tree}
+library(rpart)
+library(rpart.plot)
+
+# fit a decision tree model
+model <- rpart(CDC_DIABETES ~ ., data = train, method = "anova") # for continuous response
+print(model)
+
+# visualize tree
+rpart.plot(model, main = "Decision Tree for Diabetes Prevalence", type = 3, extra = 101, under = TRUE, cex = 0.8)
+print(model$variable.importance)
+
+# calculate MSE and add to MSE table
+predicted <- predict(model, test)
+mse_value <- round(mean((test$CDC_DIABETES - predicted)^2), 4)
+mse_table <- rbind(mse_table, data.frame(model = "decision tree", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+```{r model building - random forest}
+library(randomForest)
+
+# fit a random forest model
+model <- randomForest(CDC_DIABETES ~ ., data = train, ntree = 100, mtry = 2, importance = TRUE)
+print(model)
+
+# variable importance plot
+varImpPlot(model, main = "Variable Importance")
+
+# calculate MSE and add to MSE table
+predicted <- predict(model, test)
+mse_value <- round(mean((test$CDC_DIABETES - predicted)^2), 4)
+mse_table <- rbind(mse_table, data.frame(model = "random forest", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+
+```{r model buildling - xgboost}
+library(xgboost)
+library(Matrix)
+library(caret)
+
+# convert to matrix format for XGBoost
+train_matrix <- xgb.DMatrix(data = as.matrix(train[, -1]), label = train$CDC_DIABETES)
+test_matrix <- xgb.DMatrix(data = as.matrix(test[, -1]), label = test$CDC_DIABETES)
+
+# define XGBoost parameters
+params <- list(
+  objective = "reg:squarederror",  # for regression
+  eval_metric = "rmse",            # root mean squared error
+  eta = 0.1,                      # learning rate
+  max_depth = 6,                  # maximum depth of a tree
+  subsample = 0.8,                # subsampling ratio
+  colsample_bytree = 0.8          # column subsampling
+)
+
+# fit XGBoost model
+set.seed(123)
+model <- xgb.train(
+  params = params,
+  data = train_matrix,
+  nrounds = 100,       # number of boosting iterations
+  watchlist = list(train = train_matrix),
+  verbose = 1
+)
+
+# plot feature importance
+importance <- xgb.importance(feature_names = colnames(train[, -1]), model = model)
+xgb.plot.importance(importance)
+
+# calculate MSE and add to MSE table
+predicted <- predict(model, test_matrix)
+mse_value <- round(mean((test$CDC_DIABETES - predicted)^2), 4)
+mse_table <- rbind(mse_table, data.frame(model = "xgboost", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+```{r model building - KNN}
+library(caret)
+library(FNN)
+
+# normalize the data (KNN works better with normalized data)
+preproc <- preProcess(train, method = c("center", "scale"))
+train_normalized <- predict(preproc, train)
+test_normalized <- predict(preproc, test)
+
+# extract features (X) and target (y)
+train_x <- train_normalized[, -1]  # exclude diabetes
+train_y <- train_normalized$CDC_DIABETES
+test_x <- test_normalized[, -1]
+test_y <- test_normalized$CDC_DIABETES
+
+# fit a KNN regression model
+set.seed(123)
+knn_predictions <- FNN::knn.reg(
+  train = train_x,
+  test = test_x,
+  y = train_y,
+  k = 5  # number of neighbors
+)
+
+# visualize predictions vs actual
+library(ggplot2)
+results <- data.frame(Actual = test_y, Predicted = knn_predictions$pred)
+ggplot(results, aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue", alpha = 0.7) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "KNN Regression: Predicted vs Actual",
+       x = "Actual MPG",
+       y = "Predicted MPG") +
+  theme_minimal()
+
+# calculate MSE and add to MSE table
+predicted <- knn_predictions$pred
+mse_value <- round(mean((test_y - predicted)^2), 4)
+mse_table <- rbind(mse_table, data.frame(model = "KNN", 
+                                         mse = mse_value,
+                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+mse_table
+```
+
+```
+
+
+
+
+
+```{r model selection}
+# (note: a normalized MSE close to 0 indicates a good fit)
+mse_table 
+```
+
