@@ -41,6 +41,8 @@ sdoh_zip_clean <- sdoh_zip %>%
   
   # remove duplicate rows
   distinct()
+
+# saveRDS(sdoh_zip_clean, file = "F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_clean 20250123.RDS")
 ```
 
 # 03. Missing Data Analysis
@@ -336,7 +338,7 @@ anova_results <- list()
 for (col in setdiff(names(region_data), "REGION")) {
   # create dynamic formula
   formula <- as.formula(paste(col, "~ REGION"))
-  
+  anova_result <- aov(formula, data = region_data)
   anova_results[[col]] <- summary(anova_result)
   
   # print results
