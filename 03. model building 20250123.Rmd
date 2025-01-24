@@ -14,6 +14,11 @@ library(dplyr)
 library(fastDummies)
 library(car)
 library(glmnet)
+library(randomForest)
+library(ranger)
+library(xgboost)
+library(Matrix)
+library(caret)
 
 # set option to prevent scientific notation
 options(scipen = 999)
@@ -21,7 +26,7 @@ options(scipen = 999)
 
 ```{r import data, select features}
 # import data
-sdoh_data <- readRDS(sdoh_zip_clean, file = "F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_clean 20250123.RDS")
+sdoh_data <- readRDS(file = "F:\\Data_Science\\SDoH\\Code\\SDoH\\zip_clean 20250123.RDS")
 
 # select features
 diabetes_features <- c("CDC_DIABETES",
@@ -100,8 +105,33 @@ mse_table <- data.frame(
 ```{r model building - linear regression}
 # features selective after iterative testing
 train_subset <- train %>%
-  select(-ACS_prop_race_alone_white,
-         -ACS_prop_poverty_ratio_under_1.50)
+  select(
+    CDC_DIABETES,
+    ACS_prop_age_over_64,
+    
+    -ACS_prop_race_alone_white,
+    ACS_prop_race_alone_black,
+    
+    ACS_prop_housing_less_than_500,
+    
+    -ACS_prop_employed,
+    -ACS_prop_poverty_ratio_under_1.50,
+    ACS_prop_food_stamps,
+    -ACS_median_HH_income,
+    
+    ACS_prop_no_HS_diploma,
+    -ACS_prop_bachelors_degree,
+    -ACS_prop_graduate_degree_or_above,
+    
+    -ACS_prop_car_truck_van,
+    -ACS_prop_WFH,
+    
+    -ACS_prop_no_internet,
+    
+    -region_Northeast,
+    -region_South,
+    -region_West
+    )
 
 # fit linear regression model
 model <- lm(CDC_DIABETES ~ ., data = train_subset)
@@ -122,15 +152,15 @@ mse_table
 ```{r model building - quadratic regression}
 # create new features that are squared
 train_quadratic <- train_subset %>%
-  mutate(housing2 = ACS_prop_housing_less_than_500^2,
-         income2 = ACS_median_HH_income^2,
-         graduate2 = ACS_prop_graduate_degree_or_above^2
+  mutate(housing2 = ACS_prop_housing_less_than_500^2
+         # income2 = ACS_median_HH_income^2,
+         # graduate2 = ACS_prop_graduate_degree_or_above^2
          # white2 = ACS_prop_race_alone_white^2
          )
 test_quadratic <- test %>%
-  mutate(housing2 = ACS_prop_housing_less_than_500^2,
-         income2 = ACS_median_HH_income^2,
-         graduate2 = ACS_prop_graduate_degree_or_above^2
+  mutate(housing2 = ACS_prop_housing_less_than_500^2
+         # income2 = ACS_median_HH_income^2,
+         # graduate2 = ACS_prop_graduate_degree_or_above^2
          # white2 = ACS_prop_race_alone_white^2
          )
 
@@ -148,6 +178,21 @@ mse_table
 ```
 
 ```{r model building - linear regression with interactions}
+train_subset <- train_subset <- train %>%
+  select(
+    CDC_DIABETES,
+    ACS_prop_age_over_64,
+    ACS_prop_race_alone_black,
+    ACS_prop_housing_less_than_500,
+    ACS_prop_food_stamps,
+    ACS_prop_no_HS_diploma,
+    
+    # add region to train_subset
+    region_Northeast,
+    region_South,
+    region_West
+    )
+
 # fit linear regression model with interactions
 model <- lm(CDC_DIABETES ~ . + 
               # region_Northeast * ACS_prop_age_over_64 +
@@ -321,8 +366,6 @@ mse_table <- rbind(mse_table, data.frame(model = "decision tree",
 mse_table
 ```
 ```{r model building - random forest}
-library(randomForest)
-
 # fit a random forest model
 model <- randomForest(CDC_DIABETES ~ ., data = train, ntree = 100, mtry = 2, importance = TRUE)
 print(model)
@@ -339,11 +382,101 @@ mse_table <- rbind(mse_table, data.frame(model = "random forest",
 mse_table
 ```
 
-```{r model buildling - xgboost}
-library(xgboost)
-library(Matrix)
-library(caret)
+```{r model building - random forest hyperparameter tuning}
+##############################################
+### hyperparameter tuning: number of trees ###
+##############################################
 
+# must be sufficiently large to stabilize the error rate
+# rule of thumb: 10 * p
+10 * n_features
+ntree_vec <- c(100, 200, 500)
+
+OOB_error_ntree_vec <- rep(0, length(ntree_vec))
+
+for (i in 1:length(ntree_vec)) {
+  ntree_i <- ntree_vec[i]
+  OOB_error <- rf_OOB_error(num.trees = ntree_i, mtry = n_features/3, min.node.size = 5,
+                            sample.fraction = 1)
+  OOB_error_ntree_vec[i] <- OOB_error
+}
+
+ntree_df <- data.frame(
+  ntrees = ntree_vec, 
+  OOB_error = OOB_error_ntree_vec)
+
+# Create the line graph
+ggplot(ntree_df, aes(x = ntrees, y = OOB_error)) +
+  geom_line(color = "blue") + 
+  geom_point(color = "blue") +  
+  labs(title = "OOB Error vs. Number of Trees",
+       x = "Number of Trees (ntrees)",
+       y = "Out-of-Bag Error (OOB error)") +
+  theme_minimal() 
+
+###################################
+### hyperparameter tuning: mtry ###
+###################################
+
+# mtry: number of variables to consider at any given split
+# balances low tree correlation with reasonable predictive strength
+# when fewer relevant predictors (noisy data), a higher mtry may perform better because it makes it more likely to select those features with the strongest signal (and vice versa)
+
+# default: (regression) mtry = p/3, (classification) mtry = sqrt(p)
+n_features / 3
+mtry_vec <- c(5, 6, 7)
+ntree_vec <- c(100, 200, 500)
+
+OOB_error_ntree_mtry_vec <- expand.grid(ntree_vec, mtry_vec) %>%
+  rename(ntree = Var1,
+         mtry = Var2) %>%
+  mutate(OOB_error = rep(0, length(ntree_vec) * length(mtry_vec)))
+
+for (i in 1:nrow(OOB_error_ntree_mtry_vec)) {
+  ntree_i <- OOB_error_ntree_mtry_vec$ntree[i]
+  mtry_i <- OOB_error_ntree_mtry_vec$mtry[i]
+  OOB_error <- rf_OOB_error(num.trees = ntree_i, mtry = mtry_i, min.node.size = 5, sample.fraction = 1)
+  OOB_error_ntree_mtry_vec[i, 3] <- OOB_error
+}
+
+# Create the line graph
+ggplot(OOB_error_ntree_mtry_vec, aes(x = ntree, y = OOB_error, color = factor(mtry))) +
+  geom_line() + 
+  geom_point() +  
+  labs(title = "OOB Error vs. Considered Variables",
+       x = "Number Variables Considered at Each Split (mtry)",
+       y = "Out-of-Bag Error (OOB error)") +
+  theme_minimal()  
+
+################################################
+### hyperparameter tuning: minimum node size ###
+################################################
+
+# tree complexity (minimum node size, max depth, max number of terminal nodes, req. node size for additional splits)
+# most common: minimum node size
+# if many noisy predictors and higher mtry values are performing best, then performance may improve by increasing node size (decreasing tree depth and complexity)
+# adjust depending on accuracy and run time
+# default: (regression) node size = 5, (classification) node size = 1
+
+mtry_vec <- c(5, 6, 7)
+ntree_vec <- c(100, 200, 500)
+nodesize_vec <- c(4, 5, 6)
+
+OOB_error_ntree_mtry_nodesize_vec <- expand.grid(ntree_vec, mtry_vec, nodesize_vec) %>%
+  rename(ntree = Var1,
+         mtry = Var2,
+         nodesize = Var3) %>%
+  mutate(OOB_error = rep(0, length(ntree_vec) * length(mtry_vec) * length(nodesize_vec)))
+
+for (i in 1:nrow(OOB_error_ntree_mtry_nodesize_vec)) {
+  ntree_i <- OOB_error_ntree_mtry_nodesize_vec$ntree[i]
+  mtry_i <- OOB_error_ntree_mtry_nodesize_vec$mtry[i]
+  nodesize_i <- OOB_error_ntree_mtry_nodesize_vec$nodesize[i]
+  OOB_error <- rf_OOB_error(num.trees = ntree_i, mtry = mtry_i, min.node.size = nodesize_i, sample.fraction = 1)
+  OOB_error_ntree_mtry_nodesize_vec[i, 4] <- OOB_error
+```
+
+```{r model buildling - xgboost}
 # convert to matrix format for XGBoost
 train_matrix <- xgb.DMatrix(data = as.matrix(train[, -1]), label = train$CDC_DIABETES)
 test_matrix <- xgb.DMatrix(data = as.matrix(test[, -1]), label = test$CDC_DIABETES)
@@ -380,6 +513,7 @@ mse_table <- rbind(mse_table, data.frame(model = "xgboost",
                                          normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
 mse_table
 ```
+
 ```{r model building - KNN}
 library(caret)
 library(FNN)
@@ -420,7 +554,7 @@ predicted <- knn_predictions$pred
 mse_value <- round(mean((test_y - predicted)^2), 4)
 mse_table <- rbind(mse_table, data.frame(model = "KNN", 
                                          mse = mse_value,
-                                         normalized_mse = round(mse_value / var(test$CDC_DIABETES), 4)))
+                                         normalized_mse = mse_value))
 mse_table
 ```
 
