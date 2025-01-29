@@ -484,27 +484,3 @@ for (col in setdiff(names(diabetes_data), c("CDC_DIABETES", "REGION"))) {
 
 ```
 
-
-
-
-
-
-```{r}
-# 9. Feature Engineering ------------------------------------------------------
-
-# Create new features (e.g., interaction terms, aggregations, etc.)
-# sdoh_zip_clean <- sdoh_zip_clean %>%
-  # mutate(new_feature = numeric_variable1 * numeric_variable2)
-
-
-
-# 11. Export Cleaned Data -----------------------------------------------------
-
-# Save the cleaned dataset for further analysis
-# write.csv(sdoh_zip_clean, "cleaned_data.csv", row.names = FALSE)
-
-
-
-# saveRDS(summary_missing, file = paste0("F:\\Data_Science\\Hospice_EHR_Model\\Data\\0. raw\\ADS_",dataset,"_QA_",version_date,".RDS"))
-```
-
