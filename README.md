@@ -17,6 +17,15 @@ Public SDoH data can be found at the ZCTA, county, and census tract levels. Diab
 
 ## Methodology
 This analysis features data extract, data preprocessing, exploratory data analysis, feature selection, model building, and model selection procedures.
-After aggregating these datasets and ensuring high data quality, exploratory data analysis was conducted to determine which SDoH factors have the strongest relationship with diabetes prevalence. After feature selection, the model building process consisted of iterating through several ML techniques (linear regression, lasso regression, ridge regression, random forests, XGBoost, and KNN) to select model that minimizes test MSE the most.
+
+### Data Extraction & Data Preprocessing
+The ACS data was extracted via API call to Census Bureau. Both the CDC and SVI data were imported via an excel file downleaded from the CDC's website. ZCTA to zip code and census tract to zip code mappings were used to aggregate ZCTA-level and tract-level data to the zip code-level.
+
+### Exploratory Data Analysis
+Initial assessments were conducted to understand the data structure and the number of missing observations. A univariate analysis was performed on all features including calculating measures of center and spread (numeric) and frequency tables (categorical), visualizing shapes of distributions via histogram and Q-Q plot, checking normality assumptions, and detecting outliers. A bivariate analysis was also created by generating scatterplots (continuous vs. continuous) and identifying the features with the highest Pearson correlation to determine the strength and directon of the relationship between features and diabetes prevalence (continuous vs. continuous). Boxplots, violin plots, and ANOVA tests were conducted to detect relationship between continuous and categorical features. A multivariate analysis was also performed using interaction plots and iterating through several linear regression models to determine if there were any potential interactions between features.
+
+### Model Building
+
+
 
 ## Results & Insights
