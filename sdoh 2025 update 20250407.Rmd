@@ -75,7 +75,7 @@ library(tidyverse)
 ##    B19013 - changed to 2023 inflation-adjusted dollars
 ```{r pull ACS data from Census Bureau website and clean}
 # establish Census API connection
-Sys.setenv(CENSUS_KEY= "aee7b281866941d1d77418ed939221a02d29ea97") # DO NOT SHARE THIS
+Sys.setenv(CENSUS_KEY= "KEY") # DO NOT SHARE THIS
 readRenviron("~/.Renviron")
 Sys.getenv("CENSUS_KEY")
 
