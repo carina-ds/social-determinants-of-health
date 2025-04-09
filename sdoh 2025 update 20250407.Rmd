@@ -1,0 +1,1420 @@
+---
+title: "SDoH 2025 Update"
+author: "Carina Korcel"
+date: "2025-02-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries}
+library(dplyr)
+library(censusapi)
+library(readxl)
+library(tidyr)
+library(ggplot2)
+library(httr)
+library(tidyverse)
+```
+
+# Data Sources
+
+  1. American Community Survey (ACS) - Survey data from 3.5 million addresses on 40+ topics conducted by the Census Bureau. Topics include age, children, veterans, commuting, education, income, and employment. The data used here are 5-year estimates. New data is available every year. Data reflects 5-year period not a point in time. Data is collected through internet, mail, and in-person visits.
+  
+  2. CDC Local Data for Better Health (CDC) - Estimates for 36 health measures designed to be used to identify emerging health problems and to help develop and carry out effective, targeted public health prevention activities.
+  
+  3. CDC Social Vulnerability Index (SVI) - Social vulnerability is the degree to which a community exhibits certain social conditions that may affect that community's ability to prevent human suffering and financial loss in the event of a disaster. Index indicating the relative vulnerability of every U.S. ZCTA. Ranks on 5 social factors and groups them into 4 related themes.
+  
+  4. National Center for Statistics Urban-Rural Classification Scheme for Counties (NCHS) - Used to study and monitor health disparities across the urban-rural continuum. 6 levels ( 1 - large central metro, 2 - large fringe metro, 3 - medium metro, 4 - small metro, 5 - counties with a city of 10,000 or more population, 6 - counties without a city of 10,000 or more population). Updated in 2023. Minimal differences in county assignments, largely due to population changes over time or to counties being added or deleted.
+  
+  5. County Health Rankings & Roadmaps (CHR) - Annual study that ranks the health of nearly every county in the nation across a variety of health outcomes/behaviors.
+  
+  6. US Census Bureau Decennial Census - Used for the total population estimate.
+
+# Data Pulling
+  1. ACS - via api call to Census Bureau
+  Vintage: 2023
+  
+  2. CDC - via excel file downloaded from CDC website for ZCTA and county (https://data.cdc.gov/browse?category=500+Cities+%26+Places&q=2024&sortBy=relevance&tags=places&pageSize=20)
+  ZCTA (8/23/24)
+  County (12/23/24)
+  
+  3. SVI - via excel file downloaded from CDC website for ZCTA and county (https://www.atsdr.cdc.gov/place-health/php/svi/svi-data-documentation-download.html)
+  ZCTA - 2022 (version 12/11/24)
+  County - 2022 (version 8/23/24)
+  
+  4. Zip code to ZCTA crosswalk - via excel file download from UDS Mapper (http://web.archive.org/web/20231218141557/https://udsmapper.org/zip-code-to-zcta-crosswalk/)
+  From Census 2020 geographic boundaries for ZCTAs and the ACS 2017-2022 estimates
+  
+  5. NCHS - via excel file download from NCHS website
+  (https://www.cdc.gov/nchs/data-analysis-tools/urban-rural.html)
+  Version: 2023
+  
+  6. CHR - via excel file download from CHR website
+  (https://www.countyhealthrankings.org/health-data/methodology-and-sources/data-documentation)
+  Version: 2025
+  
+  7. Total population - via excel file download from US Census Bureau website
+  (https://data.census.gov/table/DECENNIALSF12010.P1?g=010XX00US$0500000)
+  Version: 2020
+  
+##########################################################################################################
+########################################## Zip Code Level Table ##########################################
+##########################################################################################################
+
+###############################################################
+############### American Community Survey (ACS) ###############
+###############################################################
+
+# Import and clean ACS data
+## change vintage year twice
+## run 1 table at a time to see if column heads have changed
+##    B02001 - capitalization changed
+##    B19013 - changed to 2023 inflation-adjusted dollars
+```{r pull ACS data from Census Bureau website and clean}
+# establish Census API connection
+Sys.setenv(CENSUS_KEY= "aee7b281866941d1d77418ed939221a02d29ea97") # DO NOT SHARE THIS
+readRenviron("~/.Renviron")
+Sys.getenv("CENSUS_KEY")
+
+# build function to execute census api call
+censusapicall <- function(x){
+  
+  # get field names
+  variables <- listCensusMetadata(
+    name="acs/acs5",
+    vintage="2023", # TO UPDATE: CHANGE VINTAGE
+    type="variables",
+    group=x) %>%
+    filter(grepl("EA",name)==FALSE,
+           grepl("MA",name)==FALSE,
+           grepl("M",name)==FALSE)
+    
+  # select field names and descriptions
+  vars <- variables$name
+  cols <- variables$label
+    
+  # pull selected fields
+  data <- censusapi::getCensus(
+    name="acs/acs5",
+    vintage="2023", # TO UPDATE: CHANGE VINTAGE
+    
+    vars=c("NAME", vars),
+    region="zip code tabulation area:*") 
+    
+  # adding column names to data
+  colnames(data) <- c("ZCTA", "Name", cols)
+  
+  # add table to environment
+  assign(x, data, envir = .GlobalEnv)
+  
+}
+
+# create a data dictionary of select tables
+dictionary <- as.data.frame(rbind(
+  c("B01001", "population by sex and age"),
+  c("B02001", "race"),
+  c("B03001", "hispanic/latino"),
+  c("B05001", "citizenship"),
+  c("B21001", "veteran status"),
+  c("B11001", "household type"),
+  c("B25104", "monthly housing costs"),
+  c("B23001", "employment status"),
+  c("B17001", "poverty status"),
+  c("B17024", "ratio of income to poverty level"),
+  c("B19013", "median household income"),
+  c("B19083", "Gini index of income inequality"),
+  c("B22003", "food stamps/SNAP"),
+  c("B15001", "educational attainment for 18+"),
+  c("B08006", "means of transportation to work"),
+  c("B27001", "health insurance coverage status"),
+  c("B18101", "disability status"),
+  c("B16005", "limited English"),
+  c("B28011", "no internet")
+  ) )
+colnames(dictionary) <- c("table", "topic")
+
+# use censusapicall function to pull selected tables
+api_calls <- sapply(dictionary$table, censusapicall)
+
+#  1. aggregate the detailed cross-section data
+#  2. convert totals into proportions
+#  3. combine cleaned tables into 1 ACS table
+
+# population by sex and age
+B01001_clean <- B01001 %>%
+  mutate(total_pop = `Estimate!!Total:`,
+         prop_male = `Estimate!!Total:!!Male:`/`Estimate!!Total:`,
+         prop_female = `Estimate!!Total:!!Female:`/`Estimate!!Total:`,
+         total_age_under_18 = (  rowSums(B01001[,colnames(B01001)[grepl("under 5 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("5 to 9 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("10 to 14 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("15 to 17 years", colnames(B01001), ignore.case = TRUE)]]) ) ,
+         total_age_18_to_64 = (  rowSums(B01001[,colnames(B01001)[grepl("18 and 19 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("20 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("21 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("22 to 24 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("25 to 29 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("30 to 34 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("35 to 39 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("40 to 44 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("45 to 49 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("50 to 54 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("55 to 59 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("60 and 61 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("62 to 64 years", colnames(B01001), ignore.case = TRUE)]]) ) ,
+         total_age_over_64 = (  rowSums(B01001[,colnames(B01001)[grepl("65 and 66 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("67 to 69 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("70 to 74 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("75 to 79 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("80 to 84 years", colnames(B01001), ignore.case = TRUE)]]) +
+                                   rowSums(B01001[,colnames(B01001)[grepl("85 years and over", colnames(B01001), ignore.case = TRUE)]]) ),
+         prop_age_under_18 = total_age_under_18/`Estimate!!Total:`,
+         prop_age_18_to_64 = total_age_18_to_64/`Estimate!!Total:`,
+         prop_age_over_64 = total_age_over_64/`Estimate!!Total:` ) %>%
+  select(ZCTA,
+         prop_female,
+         prop_age_under_18,
+         prop_age_18_to_64,
+         prop_age_over_64)
+
+# race
+B02001_clean <- B02001 %>%
+  mutate(total_race = `Estimate!!Total:`,
+         prop_race_two_or_more = `Estimate!!Total:!!Two or More Races:`/total_race,
+         prop_race_alone_other = `Estimate!!Total:!!Some Other Race alone`/total_race,
+         prop_race_alone_white = `Estimate!!Total:!!White alone`/total_race,
+         prop_race_alone_HI_PI = `Estimate!!Total:!!Native Hawaiian and Other Pacific Islander alone`/total_race,
+         prop_race_alone_asian = `Estimate!!Total:!!Asian alone`/total_race,
+         prop_race_alone_AI_AK = `Estimate!!Total:!!American Indian and Alaska Native alone`/total_race,
+         prop_race_alone_black = `Estimate!!Total:!!Black or African American alone`/total_race,
+         prop_minority = (prop_race_two_or_more +
+                          prop_race_alone_other +
+                          prop_race_alone_HI_PI +
+                          prop_race_alone_asian +
+                          prop_race_alone_AI_AK +
+                          prop_race_alone_black) ) %>%
+  select(ZCTA,
+         prop_race_two_or_more,
+         prop_race_alone_other,
+         prop_race_alone_white,
+         prop_race_alone_HI_PI,
+         prop_race_alone_asian,
+         prop_race_alone_AI_AK,
+         prop_race_alone_black,
+         prop_minority)
+
+# hispanic/latino
+B03001_clean <-  B03001 %>%
+  mutate(prop_hispanic_latino = `Estimate!!Total:!!Hispanic or Latino:`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_hispanic_latino )
+
+# nativity and citizenship status
+B05001_clean <- B05001 %>%
+  mutate(total=`Estimate!!Total:`,
+         prop_not_citizen = `Estimate!!Total:!!Not a U.S. citizen`/total,
+         prop_citizen = 1-prop_not_citizen) %>%
+  select(ZCTA,
+         prop_citizen)
+
+# veteran status
+B21001_clean <- B21001 %>%
+  mutate(prop_veteran = `Estimate!!Total:!!Veteran`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_veteran)
+
+# household type
+B11001_clean <- B11001 %>%
+  mutate(prop_family_HH = `Estimate!!Total:!!Family households:`/`Estimate!!Total:`,
+         prop_nonfamily_HH = `Estimate!!Total:!!Nonfamily households:`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_family_HH)
+
+# monthly housing costs
+B25104_clean <- B25104 %>%
+  mutate(prop_housing_no_cash_rent = `Estimate!!Total:!!No cash rent`/`Estimate!!Total:`,
+         prop_housing_less_than_500 = (`Estimate!!Total:!!Less than $100`+
+                                         `Estimate!!Total:!!$100 to $199`+
+                                         `Estimate!!Total:!!$200 to $299`+
+                                         `Estimate!!Total:!!$300 to $399`+
+                                         `Estimate!!Total:!!$400 to $499`)/`Estimate!!Total:`,
+         prop_housing_between_500_and_999 = (`Estimate!!Total:!!$500 to $599`+
+                                               `Estimate!!Total:!!$600 to $699`+
+                                               `Estimate!!Total:!!$700 to $799`+
+                                               `Estimate!!Total:!!$800 to $899`+
+                                               `Estimate!!Total:!!$900 to $999`)/`Estimate!!Total:`,
+         prop_housing_between_1000_and_1500 = `Estimate!!Total:!!$1,000 to $1,499`/`Estimate!!Total:`,
+         prop_housing_between_1500_and_2000 = `Estimate!!Total:!!$1,500 to $1,999`/`Estimate!!Total:`,
+         prop_housing_between_2000_and_2500 = `Estimate!!Total:!!$2,000 to $2,499`/`Estimate!!Total:`,
+         prop_housing_between_2500_and_3000 = `Estimate!!Total:!!$2,500 to $2,999`/`Estimate!!Total:`,
+         prop_housing_greater_than_3000 = `Estimate!!Total:!!$3,000 or more`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_housing_no_cash_rent,
+         prop_housing_less_than_500,
+         prop_housing_between_500_and_999,
+         prop_housing_between_1000_and_1500,
+         prop_housing_between_1500_and_2000,
+         prop_housing_between_2000_and_2500,
+         prop_housing_between_2500_and_3000,
+         prop_housing_greater_than_3000)
+
+# employment status 
+B23001_clean <- B23001 %>%
+  mutate(total_armed_forces = rowSums(B23001[,colnames(B23001)[grepl("in armed forces", colnames(B23001), ignore.case = TRUE)]]),
+         total_employed = rowSums(B23001[,colnames(B23001)[grepl("Employed", colnames(B23001), ignore.case = FALSE)]]),
+         total_unemployed = rowSums(B23001[,colnames(B23001)[grepl("unemployed", colnames(B23001), ignore.case = TRUE)]]),
+         total_in_labor_force = total_employed + total_unemployed,
+         total_not_in_labor_force = rowSums(B23001[,colnames(B23001)[grepl("not in labor force", colnames(B23001), ignore.case = TRUE)]])) %>%
+  mutate(prop_armed_forces = total_armed_forces/`Estimate!!Total:`,
+         prop_employed = total_employed/`Estimate!!Total:`,
+         prop_unemployed = total_unemployed/`Estimate!!Total:`,
+         prop_not_in_labor_force = total_not_in_labor_force/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_armed_forces,
+         prop_employed,
+         prop_unemployed,
+         prop_not_in_labor_force)
+
+# poverty status
+B17001_clean <- B17001 %>%
+  mutate(prop_at_or_above_poverty_level = `Estimate!!Total:!!Income in the past 12 months at or above poverty level:`/`Estimate!!Total:`,
+         prop_below_poverty_level = `Estimate!!Total:!!Income in the past 12 months below poverty level:`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_below_poverty_level)
+
+# ratio of income to poverty level in past 12 months
+B17024_clean <- B17024 %>%
+  mutate(total_poverty_ratio_5.00_and_over = rowSums(B17024[,colnames(B17024)[grepl("5.00 and over", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_4.00_to_4.99 =  rowSums(B17024[,colnames(B17024)[grepl("4.00 to 4.99", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_3.00_to_3.99 =  rowSums(B17024[,colnames(B17024)[grepl("3.00 to 3.99", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_2.00_to_2.99 =  rowSums(B17024[,colnames(B17024)[grepl("2.00 to 2.99", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.85_to_1.99 =  rowSums(B17024[,colnames(B17024)[grepl("1.85 to 1.99", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.75_to_1.84 =  rowSums(B17024[,colnames(B17024)[grepl("1.75 to 1.84", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.50_to_1.74 =  rowSums(B17024[,colnames(B17024)[grepl("1.50 to 1.74", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.25_to_1.49 =  rowSums(B17024[,colnames(B17024)[grepl("1.25 to 1.49", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.00_to_1.24 =  rowSums(B17024[,colnames(B17024)[grepl("1.00 to 1.24", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_0.75_to_0.99 =  rowSums(B17024[,colnames(B17024)[grepl(".75 to .99", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_0.50_to_0.74 =  rowSums(B17024[,colnames(B17024)[grepl(".50 to .74", colnames(B17024), ignore.case = TRUE)]]),
+         total_poverty_ratio_under_0.50 =  rowSums(B17024[,colnames(B17024)[grepl("under .50", colnames(B17024), ignore.case = TRUE)]])
+  ) %>%
+  mutate(prop_poverty_ratio_5.00_and_over = total_poverty_ratio_5.00_and_over / `Estimate!!Total:`,
+         prop_poverty_ratio_4.00_to_4.99 = total_poverty_ratio_4.00_to_4.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_3.00_to_3.99 = total_poverty_ratio_3.00_to_3.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_2.00_to_2.99 = total_poverty_ratio_2.00_to_2.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.85_to_1.99 = total_poverty_ratio_1.85_to_1.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.75_to_1.84 = total_poverty_ratio_1.75_to_1.84 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.50_to_1.74 = total_poverty_ratio_1.50_to_1.74 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.25_to_1.49 = total_poverty_ratio_1.25_to_1.49 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.00_to_1.24 = total_poverty_ratio_1.00_to_1.24 / `Estimate!!Total:`,
+         prop_poverty_ratio_0.75_to_0.99 = total_poverty_ratio_0.75_to_0.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_0.50_to_0.74 = total_poverty_ratio_0.50_to_0.74 / `Estimate!!Total:`,
+         prop_poverty_ratio_under_0.50 = total_poverty_ratio_under_0.50 / `Estimate!!Total:`) %>%
+  mutate(prop_poverty_ratio_under_1.50 = prop_poverty_ratio_1.25_to_1.49 +
+                                         prop_poverty_ratio_1.00_to_1.24 +
+                                         prop_poverty_ratio_0.75_to_0.99 +
+                                         prop_poverty_ratio_0.50_to_0.74 +
+                                         prop_poverty_ratio_under_0.50) %>%
+  select(ZCTA,
+         prop_poverty_ratio_under_1.50)
+
+# median household income in the past 12 months (2021 inflation adjusted dollars)
+B19013_clean <- B19013 %>%
+  mutate(median_HH_income = `Estimate!!Median household income in the past 12 months (in 2023 inflation-adjusted dollars)`,
+         median_HH_income = ifelse(median_HH_income < 0, NA, median_HH_income))%>%
+  select(ZCTA,
+         median_HH_income)
+
+# Gini index of income inequality
+B19083_clean <- B19083 %>%
+  mutate(gini_index = `Estimate!!Gini Index`,
+         gini_index = ifelse(gini_index < 0, NA, gini_index)) %>%
+  select(ZCTA,
+         gini_index)
+
+# received food stamps/SNAP in the past 12 months for households
+B22003_clean <- B22003 %>%
+  mutate(prop_food_stamps = `Estimate!!Total:!!Household received Food Stamps/SNAP in the past 12 months:`/`Estimate!!Total:`,
+         prop_no_food_stamps= `Estimate!!Total:!!Household did not receive Food Stamps/SNAP in the past 12 months:`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_food_stamps)
+
+# educational attainment for 18+
+B15001_clean <- B15001 %>%
+  mutate(total_no_high_school = rowSums(B15001[,colnames(B15001)[grepl("less than 9th grade", colnames(B15001), ignore.case = TRUE)]]),
+         total_some_high_school = rowSums(B15001[,colnames(B15001)[grepl("9th to 12th grade", colnames(B15001), ignore.case = TRUE)]]),
+         total_high_school_grad = rowSums(B15001[,colnames(B15001)[grepl("high school", colnames(B15001), ignore.case = TRUE)]]),
+         total_some_college = rowSums(B15001[,colnames(B15001)[grepl("some college", colnames(B15001), ignore.case = TRUE)]]),
+         total_associates_degree = rowSums(B15001[,colnames(B15001)[grepl("associate's degree", colnames(B15001), ignore.case = TRUE)]]),
+         total_bachelors_degree = rowSums(B15001[,colnames(B15001)[grepl("bachelor's degree", colnames(B15001), ignore.case = TRUE)]]),
+         total_graduate_degree_or_above = rowSums(B15001[,colnames(B15001)[grepl("graduate or professional", colnames(B15001), ignore.case = TRUE)]])) %>%
+  mutate(prop_no_high_school = total_no_high_school/`Estimate!!Total:`,
+         prop_some_high_school = total_some_high_school/`Estimate!!Total:`,
+         prop_high_school_grad = total_high_school_grad/`Estimate!!Total:`,
+         prop_some_college = total_some_college/`Estimate!!Total:`,
+         prop_associates_degree = total_associates_degree/`Estimate!!Total:`,
+         prop_bachelors_degree = total_bachelors_degree/`Estimate!!Total:`,
+         prop_graduate_degree_or_above = total_graduate_degree_or_above/`Estimate!!Total:`) %>%
+  mutate(prop_no_HS_diploma = prop_no_high_school + prop_some_high_school) %>%
+  select(ZCTA,
+         prop_no_HS_diploma,
+         prop_high_school_grad,
+         prop_some_college,
+         prop_associates_degree,
+         prop_bachelors_degree,
+         prop_graduate_degree_or_above)
+  
+# means of transportation to work
+B08006_clean <- B08006 %>%
+  mutate(prop_car_truck_van = `Estimate!!Total:!!Car, truck, or van:`/`Estimate!!Total:`,
+         prop_public_trans = `Estimate!!Total:!!Public transportation (excluding taxicab):`/`Estimate!!Total:`,
+         prop_taxi_motorcycle_other = `Estimate!!Total:!!Taxicab, motorcycle, or other means`/`Estimate!!Total:`,
+         prop_bicycle = `Estimate!!Total:!!Bicycle`/`Estimate!!Total:`,
+         prop_walk = `Estimate!!Total:!!Walked`/`Estimate!!Total:`,
+         prop_WFH = `Estimate!!Total:!!Worked from home`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_car_truck_van,
+         prop_public_trans,
+         prop_taxi_motorcycle_other,
+         prop_bicycle,
+         prop_walk,
+         prop_WFH)
+
+# health insurance coverage status
+B27001_clean <- B27001 %>%
+  mutate(total_health_insurance = rowSums(B27001[,colnames(B27001)[grepl("with health insurance", colnames(B27001), ignore.case = TRUE)]]),
+         total_no_health_insurance = rowSums(B27001[,colnames(B27001)[grepl("no health insurance", colnames(B27001), ignore.case = TRUE)]])) %>%
+  mutate(prop_health_insurance = total_health_insurance/`Estimate!!Total:`,
+         prop_no_health_insurance = total_no_health_insurance/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_health_insurance)
+
+# disability status
+B18101_clean <- B18101 %>%
+  mutate(total_disability = rowSums(B18101[,colnames(B18101)[grepl("no disability", colnames(B18101), ignore.case = TRUE)]]),
+         total_no_disability = rowSums(B18101[,colnames(B18101)[grepl("with a disability", colnames(B18101), ignore.case = TRUE)]])) %>%
+  mutate(prop_disability = total_disability / `Estimate!!Total:`,
+         prop_no_disability = total_no_disability / `Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_disability)
+
+# limited English
+B16005_clean <- B16005 %>%
+  mutate(prop_limited_eng = (`Estimate!!Total:!!Foreign born:!!Speak other Indo-European languages:!!Speak English "not at all"`+
+                               `Estimate!!Total:!!Foreign born:!!Speak Asian and Pacific Island languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak other Indo-European languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak Asian and Pacific Island languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak other languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak other languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak other Indo-European languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak Spanish:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak Asian and Pacific Island languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Native:!!Speak other Indo-European languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Native:!!Speak Spanish:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak Asian and Pacific Island languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak Spanish:!!Speak English "not well"`+
+                               `Estimate!!Total:!!Foreign born:!!Speak other languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak Spanish:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Native:!!Speak other languages:!!Speak English "not well"`) / `Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_limited_eng)
+
+# no internet
+B28011_clean <- B28011 %>%
+  mutate(prop_no_internet = `Estimate!!Total:!!No Internet access`/`Estimate!!Total:`) %>%
+  select(ZCTA,
+         prop_no_internet)
+
+# combine cleaned data
+acs <- B01001_clean %>%
+  left_join(B05001_clean, by="ZCTA") %>%
+  left_join(B02001_clean, by="ZCTA") %>%
+  left_join(B03001_clean, by="ZCTA") %>%
+  left_join(B21001_clean, by="ZCTA") %>%
+  left_join(B11001_clean, by="ZCTA") %>%
+  left_join(B25104_clean, by="ZCTA") %>%
+  left_join(B23001_clean, by="ZCTA") %>%
+  left_join(B17001_clean, by="ZCTA") %>%
+  left_join(B17024_clean, by="ZCTA") %>%
+  left_join(B22003_clean, by="ZCTA") %>%
+  left_join(B19013_clean, by="ZCTA") %>%
+  left_join(B19083_clean, by="ZCTA") %>%
+  left_join(B15001_clean, by="ZCTA") %>%
+  left_join(B08006_clean, by="ZCTA") %>%
+  left_join(B27001_clean, by="ZCTA") %>%
+  left_join(B18101_clean, by="ZCTA") %>%
+  left_join(B16005_clean, by="ZCTA") %>%
+  left_join(B28011_clean, by="ZCTA") %>%
+  mutate(ZCTA = as.numeric(ZCTA))
+
+# add ACS_ to column names
+colnames(acs)[-1] <- paste0("ACS_", colnames(acs)[-1])
+```
+
+##################################################################
+############### Local Data for Better Health (CDC) ###############
+##################################################################
+
+# Import and clean CDC data
+## change to most recent file
+```{r import and clean CDC data}
+# read in CDC disease burden file
+cdc_file <- read.csv("F:\\Data_Science\\SDoH\\sdoh 2025 update\\PLACES__Local_Data_for_Better_Health__ZCTA_Data_2024_release_20250402.csv")
+
+# variable descriptions
+cdc_description <- cdc_file %>%
+  select(Measure,
+         MeasureId) %>%
+  distinct()
+  
+# only select crude prevalence for each disease category at ZCTA level
+cdc <- cdc_file %>%
+  filter(Data_Value_Type=="Crude prevalence") %>%
+  mutate(ZCTA=LocationName,
+         prevalence=Data_Value,
+         disease_category=MeasureId) %>%
+  select(ZCTA,
+         prevalence,
+         disease_category) %>%
+
+  # format as a "wide" table
+  tidyr::pivot_wider(names_from = disease_category,
+              values_from = prevalence) %>%
+  mutate(ZCTA=as.numeric(ZCTA)) %>%
+  select(all_of(sort(names(.)))) %>%
+  relocate(ZCTA)
+
+# format as percentages
+cdc[colnames(cdc)[-1]] <- cdc[colnames(cdc)[-1]] / 100
+
+# add CDC_ to column names
+colnames(cdc)[-1] <- paste0("CDC_", colnames(cdc)[-1])
+```
+
+####################################################################
+############### CDC Social Vulnerability Index (SVI) ###############
+####################################################################
+
+# Import and clean SVI data
+## change to most recent file
+## now SVI has ZCTA-level data so do not have to use tract-level data anymore, no weighting needed
+```{r import and clean SVI data}
+svi_file <- read.csv("F:\\Data_Science\\SDoH\\sdoh 2025 update\\SVI_2022_US_ZCTA.csv")
+
+svi <- svi_file %>%
+  mutate(ZCTA = as.numeric(gsub("ZCTA5 ", "", LOCATION))) %>%
+  select(ZCTA,
+         colnames(svi_file)[grepl("EP_", colnames(svi_file), ignore.case = TRUE)]) %>%
+  # change -999's to NA
+  mutate(EP_UNEMP = ifelse(EP_UNEMP < 0, NA, EP_UNEMP),
+         EP_NOHSDP = ifelse(EP_NOHSDP < 0, NA, EP_NOHSDP),
+         EP_UNINSUR = ifelse(EP_UNINSUR < 0, NA, EP_UNINSUR),
+         EP_AGE65 = ifelse(EP_AGE65 < 0, NA, EP_AGE65),
+         EP_DISABL = ifelse(EP_DISABL < 0, NA, EP_DISABL),
+         EP_MOBILE = ifelse(EP_MOBILE < 0, NA, EP_MOBILE),
+         EP_NOVEH = ifelse(EP_NOVEH < 0, NA, EP_NOVEH),
+         EP_AFAM = ifelse(EP_AFAM < 0, NA, EP_AFAM),
+         EP_HISP = ifelse(EP_HISP < 0, NA, EP_HISP),
+         EP_ASIAN = ifelse(EP_ASIAN < 0, NA, EP_ASIAN),
+         EP_AIAN = ifelse(EP_AIAN < 0, NA, EP_AIAN),
+         EP_NHPI = ifelse(EP_NHPI < 0, NA, EP_NHPI),
+         EP_TWOMORE = ifelse(EP_TWOMORE < 0, NA, EP_TWOMORE),
+         EP_OTHERRACE = ifelse(EP_OTHERRACE < 0, NA, EP_OTHERRACE))
+
+svi_EP_cols <- colnames(svi %>% select(contains("EP")))
+svi[svi_EP_cols] <- svi[svi_EP_cols] / 100
+
+# add SVI_ to column names
+colnames(svi)[-1] <- paste0("SVI_", colnames(svi)[-1])
+```
+
+#####################################################################
+############### Create Zip Code-Level Aggregate Table ###############
+#####################################################################
+
+## change to most recent file
+## include region as a variable now
+```{r create zip code table}
+### map ZCTA to zip code to state
+# import zcta to zip crosswalk from UDS Mapper (2022 version)
+zcta_to_zip_file <- readxl::read_excel("F:\\Data_Science\\SDoH\\sdoh 2025 update\\ZIPCodetoZCTACrosswalk2022UDS.xlsx")
+zcta_to_zip <- zcta_to_zip_file %>%
+  mutate(ZCTA = as.numeric(zcta)) %>%
+  select(STATE,
+         ZCTA,
+         ZIP_CODE)
+
+### map state to region
+state_to_region_file <- readxl::read_excel("F:\\Data_Science\\SDoH\\Data\\sdoh 2024\\state to region mapping 20250121.xlsx")
+
+table_zip <- acs %>%
+  
+  left_join(cdc, by="ZCTA") %>%
+  
+  left_join(svi, by="ZCTA") %>%
+  
+  # add state and zip code
+  left_join(zcta_to_zip, by="ZCTA") %>%
+  
+  # add region
+  left_join(state_to_region_file, by="STATE") %>%
+  
+  # reorder variables
+  relocate(REGION,
+           STATE,
+           ZIP_CODE) %>%
+  select(-ZCTA) %>%
+  filter(!is.na(ZIP_CODE)) 
+
+# save as RDS
+# saveRDS(table_zip, file = "F:\\Data_Science\\SDoH\\sdoh 2025 update\\SDoH_zip_table 20250402.RDS")
+```
+
+##########################################################################################################
+########################################## County Level Table ############################################
+##########################################################################################################
+
+###############################################################
+######## NCHS Urban-Rural Classification Scheme (NCHS) ########
+###############################################################
+
+# Import NCHS data
+```{r import and clean NCHS data}
+nchs_file <- read.csv("F:\\Data_Science\\SDoH\\sdoh 2025 update\\NCHS_2023_20250402.csv")
+nchs <- nchs_file %>%
+  mutate(FIPS = as.character(FIPS.code),
+         NCHS_urban_rural_score = as.numeric(substr(X2023.Code, 1, 1))) %>%
+  select(FIPS,
+         NCHS_urban_rural_score) %>%
+  mutate(FIPS = as.character(FIPS))
+```
+
+###############################################################
+############### American Community Survey (ACS) ###############
+###############################################################
+
+# Import and clean ACS data
+```{r pull ACS data from Census Bureau website and clean}
+# dictionary
+dictionary_county <- as.data.frame(rbind(
+  c("B01001", "population by sex and age"),
+  c("B02001", "race"),
+  c("B03001", "hispanic/latino"),
+  c("B05001", "citizenship"),
+  c("B21001", "veteran status"),
+  c("B11001", "household type"),
+  c("B25104", "monthly housing costs"),
+  c("B23001", "employment status"),
+  c("B17001", "poverty status"),
+  c("B17024", "ratio of income to poverty level"),
+  c("B19013", "median household income"),
+  c("B19083", "Gini index of income inequality"),
+  c("B22003", "food stamps/SNAP"),
+  c("B15001", "educational attainment for 18+"),
+  c("B08006", "means of transportation to work"),
+  c("B27001", "health insurance coverage status"),
+  c("B18101", "disability status"),
+  c("B16005", "limited English"),
+  c("B28011", "no internet")
+) )
+colnames(dictionary_county) <- c("table", "topic")
+
+# establish Census API connection
+Sys.setenv(CENSUS_KEY= "aee7b281866941d1d77418ed939221a02d29ea97")
+readRenviron("~/.Renviron")
+Sys.getenv("CENSUS_KEY")
+
+# build function to execute census api call
+censusapicall_county <- function(x){
+  
+  # get variable names
+  variables <- listCensusMetadata(
+    name="acs/acs5",
+    vintage="2023",
+    type="variables",
+    group=x) %>%
+    filter(grepl("EA",name)==FALSE,
+           grepl("MA",name)==FALSE,
+           grepl("M",name)==FALSE)
+  
+  # select variable names and descriptions
+  vars <- variables$name
+  cols <- variables$label
+  
+  # pull selected variables
+  data <- censusapi::getCensus(
+    name="acs/acs5",
+    vintage="2023",
+    vars=c("NAME", vars),
+    region="county:*") %>%
+    mutate(FIPS=as.character(as.numeric(paste0(state, county)))) %>%
+    relocate(FIPS) %>%
+    select(-c(state, county, NAME))
+    
+  
+  # adding column names to data
+  colnames(data) <- c("FIPS", cols)
+  
+  # create table for each topic
+  assign(paste0(x, "_county"), data, envir = .GlobalEnv)
+  
+}
+
+# use censusapicall function to pull selected tables
+api_calls_county <- sapply(dictionary_county$table, censusapicall_county)
+
+# population by sex and age
+B01001_clean_county <- B01001_county %>%
+  mutate(total_pop = `Estimate!!Total:`,
+         prop_male = `Estimate!!Total:!!Male:`/`Estimate!!Total:`,
+         prop_female = `Estimate!!Total:!!Female:`/`Estimate!!Total:`,
+         total_age_under_18 = (  rowSums(B01001_county[,colnames(B01001_county)[grepl("under 5 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("5 to 9 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("10 to 14 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("15 to 17 years", colnames(B01001_county), ignore.case = TRUE)]]) ) ,
+         total_age_18_to_64 = (  rowSums(B01001_county[,colnames(B01001_county)[grepl("18 and 19 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("20 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("21 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("22 to 24 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("25 to 29 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("30 to 34 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("35 to 39 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("40 to 44 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("45 to 49 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("50 to 54 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("55 to 59 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("60 and 61 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                   rowSums(B01001_county[,colnames(B01001_county)[grepl("62 to 64 years", colnames(B01001_county), ignore.case = TRUE)]]) ) ,
+         total_age_over_64 = (  rowSums(B01001_county[,colnames(B01001_county)[grepl("65 and 66 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                  rowSums(B01001_county[,colnames(B01001_county)[grepl("67 to 69 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                  rowSums(B01001_county[,colnames(B01001_county)[grepl("70 to 74 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                  rowSums(B01001_county[,colnames(B01001_county)[grepl("75 to 79 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                  rowSums(B01001_county[,colnames(B01001_county)[grepl("80 to 84 years", colnames(B01001_county), ignore.case = TRUE)]]) +
+                                  rowSums(B01001_county[,colnames(B01001_county)[grepl("85 years and over", colnames(B01001_county), ignore.case = TRUE)]]) ),
+         prop_age_under_18 = total_age_under_18/`Estimate!!Total:`,
+         prop_age_18_to_64 = total_age_18_to_64/`Estimate!!Total:`,
+         prop_age_over_64 = total_age_over_64/`Estimate!!Total:` ) %>%
+  select(FIPS,
+         #total_pop,
+         # prop_male,
+         prop_female,
+         prop_age_under_18,
+         prop_age_18_to_64,
+         prop_age_over_64)
+
+# race
+B02001_clean_county <- B02001_county %>%
+  mutate(total_race = `Estimate!!Total:`,
+         prop_race_two_or_more = `Estimate!!Total:!!Two or More Races:`/total_race,
+         prop_race_alone_other = `Estimate!!Total:!!Some Other Race alone`/total_race,
+         prop_race_alone_white = `Estimate!!Total:!!White alone`/total_race,
+         prop_race_alone_HI_PI = `Estimate!!Total:!!Native Hawaiian and Other Pacific Islander alone`/total_race,
+         prop_race_alone_asian = `Estimate!!Total:!!Asian alone`/total_race,
+         prop_race_alone_AI_AK = `Estimate!!Total:!!American Indian and Alaska Native alone`/total_race,
+         prop_race_alone_black = `Estimate!!Total:!!Black or African American alone`/total_race,
+         prop_minority = (prop_race_two_or_more +
+                             prop_race_alone_other +
+                             prop_race_alone_HI_PI +
+                             prop_race_alone_asian +
+                             prop_race_alone_AI_AK +
+                             prop_race_alone_black) ) %>%
+  select(FIPS,
+         prop_race_two_or_more,
+         prop_race_alone_other,
+         prop_race_alone_white,
+         prop_race_alone_HI_PI,
+         prop_race_alone_asian,
+         prop_race_alone_AI_AK,
+         prop_race_alone_black,
+         prop_minority)
+
+# hispanic/latino
+B03001_clean_county <-  B03001_county %>%
+  mutate(prop_hispanic_latino = `Estimate!!Total:!!Hispanic or Latino:`/`Estimate!!Total:`,
+         prop_non_hispanic_latino = `Estimate!!Total:!!Not Hispanic or Latino`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_hispanic_latino)
+         # prop_non_hispanic_latino)
+
+# nativity and citizenship status
+B05001_clean_county <- B05001_county %>%
+  mutate(total=`Estimate!!Total:`,
+         prop_not_citizen = `Estimate!!Total:!!Not a U.S. citizen`/total,
+         prop_citizen = 1-prop_not_citizen) %>%
+  select(FIPS,
+         prop_citizen)
+         # prop_not_citizen)
+
+# veteran status
+B21001_clean_county <- B21001_county %>%
+  mutate(prop_veteran = `Estimate!!Total:!!Veteran`/`Estimate!!Total:`,
+         prop_nonveteran =`Estimate!!Total:!!Nonveteran`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_veteran)
+         # prop_nonveteran)
+
+# household type
+B11001_clean_county <- B11001_county %>%
+  mutate(prop_family_HH = `Estimate!!Total:!!Family households:`/`Estimate!!Total:`,
+         prop_nonfamily_HH = `Estimate!!Total:!!Nonfamily households:`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_family_HH)
+         # prop_nonfamily_HH)
+
+# monthly housing costs
+B25104_clean_county <- B25104_county %>%
+  mutate(prop_housing_no_cash_rent = `Estimate!!Total:!!No cash rent`/`Estimate!!Total:`,
+         prop_housing_less_than_500 = (`Estimate!!Total:!!Less than $100`+
+                                         `Estimate!!Total:!!$100 to $199`+
+                                         `Estimate!!Total:!!$200 to $299`+
+                                         `Estimate!!Total:!!$300 to $399`+
+                                         `Estimate!!Total:!!$400 to $499`)/`Estimate!!Total:`,
+         prop_housing_between_500_and_999 = (`Estimate!!Total:!!$500 to $599`+
+                                               `Estimate!!Total:!!$600 to $699`+
+                                               `Estimate!!Total:!!$700 to $799`+
+                                               `Estimate!!Total:!!$800 to $899`+
+                                               `Estimate!!Total:!!$900 to $999`)/`Estimate!!Total:`,
+         prop_housing_between_1000_and_1500 = `Estimate!!Total:!!$1,000 to $1,499`/`Estimate!!Total:`,
+         prop_housing_between_1500_and_2000 = `Estimate!!Total:!!$1,500 to $1,999`/`Estimate!!Total:`,
+         prop_housing_between_2000_and_2500 = `Estimate!!Total:!!$2,000 to $2,499`/`Estimate!!Total:`,
+         prop_housing_between_2500_and_3000 = `Estimate!!Total:!!$2,500 to $2,999`/`Estimate!!Total:`,
+         prop_housing_greater_than_3000 = `Estimate!!Total:!!$3,000 or more`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_housing_no_cash_rent,
+         prop_housing_less_than_500,
+         prop_housing_between_500_and_999,
+         prop_housing_between_1000_and_1500,
+         prop_housing_between_1500_and_2000,
+         prop_housing_between_2000_and_2500,
+         prop_housing_between_2500_and_3000,
+         prop_housing_greater_than_3000)
+
+# employment status 
+B23001_clean_county <- B23001_county %>%
+  mutate(total_armed_forces = rowSums(B23001_county[,colnames(B23001_county)[grepl("in armed forces", colnames(B23001_county), ignore.case = TRUE)]]),
+         total_employed = rowSums(B23001_county[,colnames(B23001_county)[grepl("Employed", colnames(B23001_county), ignore.case = FALSE)]]),
+         total_unemployed = rowSums(B23001_county[,colnames(B23001_county)[grepl("unemployed", colnames(B23001_county), ignore.case = TRUE)]]),
+         total_in_labor_force = total_employed + total_unemployed,
+         total_not_in_labor_force = rowSums(B23001_county[,colnames(B23001_county)[grepl("not in labor force", colnames(B23001_county), ignore.case = TRUE)]])) %>%
+  mutate(prop_armed_forces = total_armed_forces/`Estimate!!Total:`,
+         prop_employed = total_employed/`Estimate!!Total:`,
+         prop_unemployed = total_unemployed/`Estimate!!Total:`,
+         prop_not_in_labor_force = total_not_in_labor_force/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_armed_forces,
+         prop_employed,
+         prop_unemployed,
+         prop_not_in_labor_force)
+
+# poverty status
+B17001_clean_county <- B17001_county %>%
+  mutate(prop_at_or_above_poverty_level = `Estimate!!Total:!!Income in the past 12 months at or above poverty level:`/`Estimate!!Total:`,
+         prop_below_poverty_level = `Estimate!!Total:!!Income in the past 12 months below poverty level:`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         # prop_at_or_above_poverty_level,
+         prop_below_poverty_level)
+
+# ratio of income to poverty level in past 12 months
+B17024_clean_county <- B17024_county %>%
+  mutate(total_poverty_ratio_5.00_and_over = rowSums(B17024_county[,colnames(B17024_county)[grepl("5.00 and over", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_4.00_to_4.99 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("4.00 to 4.99", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_3.00_to_3.99 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("3.00 to 3.99", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_2.00_to_2.99 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("2.00 to 2.99", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.85_to_1.99 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("1.85 to 1.99", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.75_to_1.84 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("1.75 to 1.84", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.50_to_1.74 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("1.50 to 1.74", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.25_to_1.49 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("1.25 to 1.49", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_1.00_to_1.24 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("1.00 to 1.24", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_0.75_to_0.99 =  rowSums(B17024_county[,colnames(B17024_county)[grepl(".75 to .99", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_0.50_to_0.74 =  rowSums(B17024_county[,colnames(B17024_county)[grepl(".50 to .74", colnames(B17024_county), ignore.case = TRUE)]]),
+         total_poverty_ratio_under_0.50 =  rowSums(B17024_county[,colnames(B17024_county)[grepl("under .50", colnames(B17024_county), ignore.case = TRUE)]])
+  ) %>%
+  mutate(prop_poverty_ratio_5.00_and_over = total_poverty_ratio_5.00_and_over / `Estimate!!Total:`,
+         prop_poverty_ratio_4.00_to_4.99 = total_poverty_ratio_4.00_to_4.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_3.00_to_3.99 = total_poverty_ratio_3.00_to_3.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_2.00_to_2.99 = total_poverty_ratio_2.00_to_2.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.85_to_1.99 = total_poverty_ratio_1.85_to_1.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.75_to_1.84 = total_poverty_ratio_1.75_to_1.84 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.50_to_1.74 = total_poverty_ratio_1.50_to_1.74 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.25_to_1.49 = total_poverty_ratio_1.25_to_1.49 / `Estimate!!Total:`,
+         prop_poverty_ratio_1.00_to_1.24 = total_poverty_ratio_1.00_to_1.24 / `Estimate!!Total:`,
+         prop_poverty_ratio_0.75_to_0.99 = total_poverty_ratio_0.75_to_0.99 / `Estimate!!Total:`,
+         prop_poverty_ratio_0.50_to_0.74 = total_poverty_ratio_0.50_to_0.74 / `Estimate!!Total:`,
+         prop_poverty_ratio_under_0.50 = total_poverty_ratio_under_0.50 / `Estimate!!Total:`) %>%
+  mutate(prop_poverty_ratio_under_1.50 = prop_poverty_ratio_1.25_to_1.49 +
+                                         prop_poverty_ratio_1.00_to_1.24 +
+                                         prop_poverty_ratio_0.75_to_0.99 +
+                                         prop_poverty_ratio_0.50_to_0.74 +
+                                         prop_poverty_ratio_under_0.50) %>%
+  select(FIPS,
+         prop_poverty_ratio_under_1.50)
+
+# median household income in the past 12 months (2023 inflation adjusted dollars)
+B19013_clean_county <- B19013_county %>%
+  mutate(median_HH_income = `Estimate!!Median household income in the past 12 months (in 2023 inflation-adjusted dollars)`,
+         median_HH_income = ifelse(median_HH_income < 0, NA, median_HH_income))%>%
+  select(FIPS,
+         median_HH_income)
+
+# Gini index of income inequality
+B19083_clean_county <- B19083_county %>%
+  mutate(gini_index = `Estimate!!Gini Index`) %>%
+  select(FIPS,
+         gini_index)
+
+# received food stamps/SNAP in the past 12 months for households
+B22003_clean_county <- B22003_county %>%
+  mutate(prop_food_stamps = `Estimate!!Total:!!Household received Food Stamps/SNAP in the past 12 months:`/`Estimate!!Total:`,
+         prop_no_food_stamps= `Estimate!!Total:!!Household did not receive Food Stamps/SNAP in the past 12 months:`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_food_stamps)
+         # prop_no_food_stamps)
+
+# educational attainment for 18+
+B15001_clean_county <- B15001_county %>%
+  mutate(total_no_high_school = rowSums(B15001_county[,colnames(B15001_county)[grepl("less than 9th grade", colnames(B15001_county), ignore.case = TRUE)]]),
+         total_some_high_school = rowSums(B15001_county[,colnames(B15001_county)[grepl("9th to 12th grade", colnames(B15001_county), ignore.case = TRUE)]]),
+         total_high_school_grad = rowSums(B15001_county[,colnames(B15001_county)[grepl("high school", colnames(B15001_county), ignore.case = TRUE)]]),
+         total_some_college = rowSums(B15001_county[,colnames(B15001_county)[grepl("some college", colnames(B15001_county), ignore.case = TRUE)]]),
+         total_associates_degree = rowSums(B15001_county[,colnames(B15001_county)[grepl("associate's degree", colnames(B15001_county), ignore.case = TRUE)]]),
+         total_bachelors_degree = rowSums(B15001_county[,colnames(B15001_county)[grepl("bachelor's degree", colnames(B15001_county), ignore.case = TRUE)]]),
+         total_graduate_degree_or_above = rowSums(B15001_county[,colnames(B15001_county)[grepl("graduate or professional", colnames(B15001_county), ignore.case = TRUE)]])) %>%
+  mutate(prop_no_high_school = total_no_high_school/`Estimate!!Total:`,
+         prop_some_high_school = total_some_high_school/`Estimate!!Total:`,
+         prop_high_school_grad = total_high_school_grad/`Estimate!!Total:`,
+         prop_some_college = total_some_college/`Estimate!!Total:`,
+         prop_associates_degree = total_associates_degree/`Estimate!!Total:`,
+         prop_bachelors_degree = total_bachelors_degree/`Estimate!!Total:`,
+         prop_graduate_degree_or_above = total_graduate_degree_or_above/`Estimate!!Total:`) %>%
+  mutate(prop_no_HS_diploma = prop_no_high_school + prop_some_high_school) %>%
+  select(FIPS,
+         prop_no_HS_diploma,
+         prop_high_school_grad,
+         prop_some_college,
+         prop_associates_degree,
+         prop_bachelors_degree,
+         prop_graduate_degree_or_above)
+
+# means of transportation to work
+B08006_clean_county <- B08006_county %>%
+  mutate(prop_car_truck_van = `Estimate!!Total:!!Car, truck, or van:`/`Estimate!!Total:`,
+         prop_public_trans = `Estimate!!Total:!!Public transportation (excluding taxicab):`/`Estimate!!Total:`,
+         prop_taxi_motorcycle_other = `Estimate!!Total:!!Taxicab, motorcycle, or other means`/`Estimate!!Total:`,
+         prop_bicycle = `Estimate!!Total:!!Bicycle`/`Estimate!!Total:`,
+         prop_walk = `Estimate!!Total:!!Walked`/`Estimate!!Total:`,
+         prop_WFH = `Estimate!!Total:!!Worked from home`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_car_truck_van,
+         prop_public_trans,
+         prop_taxi_motorcycle_other,
+         prop_bicycle,
+         prop_walk,
+         prop_WFH)
+
+# health insurance coverage status
+B27001_clean_county <- B27001_county %>%
+  mutate(total_health_insurance = rowSums(B27001_county[,colnames(B27001_county)[grepl("with health insurance", colnames(B27001_county), ignore.case = TRUE)]]),
+         total_no_health_insurance = rowSums(B27001_county[,colnames(B27001_county)[grepl("no health insurance", colnames(B27001_county), ignore.case = TRUE)]])) %>%
+  mutate(prop_health_insurance = total_health_insurance/`Estimate!!Total:`,
+         prop_no_health_insurance = total_no_health_insurance/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_health_insurance)
+         # prop_no_health_insurance)
+
+# disability status
+B18101_clean_county <- B18101_county %>%
+  mutate(total_disability = rowSums(B18101_county[,colnames(B18101_county)[grepl("no disability", colnames(B18101_county), ignore.case = TRUE)]]),
+         total_no_disability = rowSums(B18101_county[,colnames(B18101_county)[grepl("with a disability", colnames(B18101_county), ignore.case = TRUE)]])) %>%
+  mutate(prop_disability = total_disability / `Estimate!!Total:`,
+         prop_no_disability = total_no_disability / `Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_disability)
+         # prop_no_disability)
+
+# limited English
+B16005_clean_county <- B16005_county %>%
+  mutate(prop_limited_eng = (`Estimate!!Total:!!Foreign born:!!Speak other Indo-European languages:!!Speak English "not at all"`+
+                               `Estimate!!Total:!!Foreign born:!!Speak Asian and Pacific Island languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak other Indo-European languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak Asian and Pacific Island languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak other languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak other languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak other Indo-European languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak Spanish:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak Asian and Pacific Island languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Native:!!Speak other Indo-European languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Native:!!Speak Spanish:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak Asian and Pacific Island languages:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Foreign born:!!Speak Spanish:!!Speak English "not well"`+
+                               `Estimate!!Total:!!Foreign born:!!Speak other languages:!!Speak English "not at all"` +
+                               `Estimate!!Total:!!Native:!!Speak Spanish:!!Speak English "not well"` +
+                               `Estimate!!Total:!!Native:!!Speak other languages:!!Speak English "not well"`) / `Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_limited_eng)
+
+# no internet
+B28011_clean_county <- B28011_county %>%
+  mutate(prop_no_internet = `Estimate!!Total:!!No Internet access`/`Estimate!!Total:`) %>%
+  select(FIPS,
+         prop_no_internet)
+
+# combine cleaned data
+acs_county <- B01001_clean_county %>%
+  left_join(B05001_clean_county, by="FIPS") %>%
+  left_join(B02001_clean_county, by="FIPS") %>%
+  left_join(B03001_clean_county, by="FIPS") %>%
+  left_join(B21001_clean_county, by="FIPS") %>%
+  left_join(B11001_clean_county, by="FIPS") %>%
+  left_join(B25104_clean_county, by="FIPS") %>%
+  left_join(B23001_clean_county, by="FIPS") %>%
+  left_join(B17001_clean_county, by="FIPS") %>%
+  left_join(B17024_clean_county, by="FIPS") %>%
+  left_join(B22003_clean_county, by="FIPS") %>%
+  left_join(B19013_clean_county, by="FIPS") %>%
+  left_join(B19083_clean_county, by="FIPS") %>%
+  left_join(B15001_clean_county, by="FIPS") %>%
+  left_join(B08006_clean_county, by="FIPS") %>%
+  left_join(B27001_clean_county, by="FIPS") %>%
+  left_join(B18101_clean_county, by="FIPS") %>%
+  left_join(B16005_clean_county, by="FIPS") %>%
+  left_join(B28011_clean_county, by="FIPS")
+
+# add ACS_ to column names
+colnames(acs_county)[-1] <- paste0("ACS_", colnames(acs_county)[-1])
+```
+
+##################################################################
+############### Local Data for Better Health (CDC) ###############
+##################################################################
+
+# Import and clean CDC data
+```{r import and clean CDC data}
+# read in CDC disease burden file
+cdc_county_file <- read.csv("F:\\Data_Science\\SDoH\\sdoh 2025 update\\PLACES__Local_Data_for_Better_Health__County_Data_2024_release_20250402.csv")
+
+# variable descriptions
+cdc_county_description <- cdc_county_file %>%
+  select(Measure,
+         MeasureId) %>%
+  distinct()
+
+# only select crude prevalence for each disease category at county level
+cdc_county <- cdc_county_file %>%
+  filter(Data_Value_Type=="Crude prevalence") %>%
+  mutate(FIPS=LocationID,
+         prevalence=Data_Value,
+         disease_category=MeasureId) %>%
+  select(FIPS,
+         prevalence,
+         disease_category) %>%
+  
+  # format as a "wide" table
+  tidyr::pivot_wider(names_from = disease_category,
+                     values_from = prevalence) %>%
+  mutate(FIPS=as.character(FIPS))
+
+# format as percentages
+cdc_county[colnames(cdc_county)[-1]] <- cdc_county[colnames(cdc_county)[-1]] / 100
+
+# add CDC_ to column names
+colnames(cdc_county)[-1] <- paste0("CDC_", colnames(cdc_county)[-1])
+```
+
+####################################################################
+############### CDC Social Vulnerability Index (SVI) ###############
+####################################################################
+
+# Import and clean SVI data
+```{r import and clean SVI data}
+svi_county_file <- read.csv("F:\\Data_Science\\SDoH\\sdoh 2025 update\\SVI_2022_US_county.csv")
+
+svi_county <- svi_county_file %>%
+  select(STATE,
+         COUNTY,
+         FIPS,
+         colnames(svi_file)[grepl("EP_", colnames(svi_file), ignore.case = TRUE)],
+         colnames(svi_file)[grepl("EPL_", colnames(svi_file), ignore.case = TRUE)],
+         colnames(svi_file)[grepl("F_", colnames(svi_file), ignore.case = TRUE)],
+         colnames(svi_file)[grepl("SPL_", colnames(svi_file), ignore.case = TRUE)],
+         colnames(svi_file)[grepl("RPL_", colnames(svi_file), ignore.case = TRUE)]) %>%
+  mutate(FIPS = as.character(FIPS)) %>%
+  
+  # convert -999's to NA's
+  mutate(F_POV150 = if_else(F_POV150 < 0, NA, F_POV150),
+         F_UNEMP = if_else(F_POV150 < 0, NA, F_POV150),
+         F_HBURD = if_else(F_POV150 < 0, NA, F_POV150),
+         F_NOHSDP = if_else(F_POV150 < 0, NA, F_POV150),
+         F_UNINSUR = if_else(F_POV150 < 0, NA, F_POV150),
+         F_THEME1 = if_else(F_POV150 < 0, NA, F_POV150),
+         F_AGE65 = if_else(F_POV150 < 0, NA, F_POV150),
+         F_AGE17 = if_else(F_POV150 < 0, NA, F_POV150),
+         F_DISABL = if_else(F_POV150 < 0, NA, F_POV150),
+         F_SNGPNT = if_else(F_POV150 < 0, NA, F_POV150),
+         F_LIMENG = if_else(F_POV150 < 0, NA, F_POV150),   
+         F_THEME2 = if_else(F_POV150 < 0, NA, F_POV150),
+         F_MINRTY = if_else(F_POV150 < 0, NA, F_POV150),
+         F_THEME3 = if_else(F_POV150 < 0, NA, F_POV150),
+         F_MUNIT = if_else(F_POV150 < 0, NA, F_POV150),
+         F_MOBILE = if_else(F_POV150 < 0, NA, F_POV150),
+         F_CROWD = if_else(F_POV150 < 0, NA, F_POV150),
+         F_NOVEH = if_else(F_POV150 < 0, NA, F_POV150),
+         F_GROUPQ = if_else(F_POV150 < 0, NA, F_POV150),
+         F_THEME4 = if_else(F_POV150 < 0, NA, F_POV150),
+         F_TOTAL = if_else(F_POV150 < 0, NA, F_POV150))
+
+svi_county_EP_cols <- colnames(svi_county %>% select(contains("EP")))
+svi_county[svi_county_EP_cols] <- svi_county[svi_county_EP_cols] / 100
+
+colnames(svi_county)[4:74] <- paste0("SVI_", colnames(svi_county)[4:74])
+```
+
+#######################################################################
+############### County Health Rankings & Roadmaps (CHR) ###############
+#######################################################################
+# save updated csv file and data dictionary. ensure column names match.
+
+# Import and clean CHR data
+```{r import and clean CHR data}
+library(janitor)
+chr_file <- read.csv("F:\\Data_Science\\SDoH\\sdoh 2025 update\\2025 CHR CSV Analytic Data.csv", header = FALSE)[-1,] %>%
+  row_to_names(row_number = 1)
+
+chr_dictionary <- data.frame(rbind(
+  c("v036_rawvalue", "poor physical health days", "poor_physical_health_days"),
+  c("v042_rawvalue", "poor mental health days", "poor_mental_health_days"),
+  c("v132_rawvalue", "access to exercise opportunities", "prop_exercise_access"),
+  c("v133_rawvalue", "food environment index", "food_environ_index"),
+  c("v085_rawvalue", "uninsured", "prop_uninsured"),
+  c("v136_rawvalue", "severe housing problems", "prop_severe_housing_probs"),
+  c("v136_other_data_1", "percentage of households with high housing costs", "prop_high_housing_cost"),
+  c("v136_other_data_2", "percentage of households with overcrowding", "prop_overcrowding"),
+  c("v136_other_data_3", "percentage of households with lack of kitchen or plumbing facilities", "prop_no_kitchen_plumbing"),
+  c("v125_rawvalue", "air pollution: particulate matter", "air_pollution"),
+  c("v124_rawvalue", "drinking water violations", "drinking_water_violations"),
+  c("v166_rawvalue", "broadband access", "prop_broadband_access"),
+  c("v069_rawvalue", "some college", "prop_some_college"),
+  c("v168_rawvalue", "high school completion", "prop_high_school_diploma"),
+  c("v023_rawvalue", "unemployment", "prop_unemployment"),
+  c("v044_rawvalue", "income inequality", "income_inequality"),
+  c("v024_rawvalue", "children in poverty", "prop_children_in_poverty"),
+  c("v140_rawvalue", "social associations", "social_associations"),
+  c("v147_rawvalue", "life expectancy", "life_expectancy"),
+  c("v127_rawvalue", "premature age-adjusted mortality", "premature_mortality"),
+  c("v060_rawvalue", "diabetes prevalence", "diabetes_prevalence"),
+  c("v011_rawvalue", "adult obesity", "prop_adult_obesity"),
+  c("v083_rawvalue", "limited access to healthy foods", "prop_limited_healthy_food_access"),
+  c("v139_rawvalue", "food insecurity", "prop_food_insecurity"),
+  c("v009_rawvalue", "adult smoking", "prop_adult_smoking"),
+  c("v070_rawvalue", "physical inactivity", "prop_physical_inactivity"),
+  c("v154_rawvalue", "severe housing cost burden", "prop_severe_housing_cost"),
+  c("v063_rawvalue", "median household income", "median_household_income"),
+  c("v058_rawvalue", "proportion rural", "prop_rural")
+))
+colnames(chr_dictionary) <- c("variable", "description", "name")
+
+chr <- chr_file %>%
+  select(fipscode,
+         all_of(chr_dictionary$variable)) %>%
+  mutate(across(everything(), as.numeric),
+         fipscode = as.character(fipscode))
+colnames(chr) <- c("FIPS", chr_dictionary$name)
+
+colnames(chr)[-1] <- paste0("CHR_", colnames(chr)[-1])
+```
+
+#######################################################
+############### Census Total Population ###############
+#######################################################
+
+# import and clean total population
+```{r import and clean total population}
+total_pop_county_file <- read.csv("F:\\Data_Science\\SDoH\\Data\\sdoh 2024\\CB_Total Population Table P1 - County 2020.csv")
+
+total_pop_county <- total_pop_county_file[-1,]
+total_pop_county[,5:6] <- str_split_fixed(total_pop_county$GEO_ID, "S", 2) 
+total_pop_county <- total_pop_county %>%
+  mutate(Label = X,
+         FIPS = as.character(as.numeric(V6)),
+         TOT_POP = as.numeric(P1_001N)) %>%
+  filter(Label=="0500000U") %>%
+  select(FIPS,
+         TOT_POP) 
+```
+
+#####################################################################
+############### Create County-Level Aggregate Table #################
+#####################################################################
+
+```{r create county table}
+table_county <- nchs %>%
+  left_join(acs_county, by="FIPS") %>%
+  left_join(cdc_county, by="FIPS") %>%
+  left_join(svi_county, by="FIPS") %>%
+  left_join(chr, by=c("FIPS")) %>%
+  left_join(total_pop_county, by="FIPS") %>%
+  relocate(STATE, .after=FIPS) %>%
+  relocate(COUNTY, .after=STATE) %>%
+  relocate(TOT_POP, .after=COUNTY) 
+
+# save as RDS
+# saveRDS(table_county, file = "F:\\Data_Science\\SDoH\\sdoh 2025 update\\SDoH_county_table 20250407.RDS")
+```
+
+```{r EDA for zip and county tables}
+get_EDA <- function(data) {
+  
+  # structure
+  print(str(data))
+  
+  # table with missing counts and frequency
+  missing_summary <- data.frame(
+    column = colnames(data),
+    missing_count = sapply(data, function(x) sum(is.na(x))),
+    missing_percentage = round(sapply(data, function(x) mean(is.na(x)) * 100), 2)
+    ) %>%
+    arrange(desc(missing_percentage))
+ print(missing_summary) 
+ 
+  # bar graph: % of missing values by feature
+  ggplot(missing_summary, aes(x = reorder(column, -missing_percentage), y = missing_percentage)) +
+        geom_bar(stat = "identity", fill = "darksalmon") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        labs(title = "Percentage of Missing Values by Variable",
+             x = "Variables",
+             y = "Percentage Missing") +
+        scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
+}
+get_EDA(table_zip)
+get_EDA(table_county)
+
+# compare feature distributions
+for (col in colnames(table_zip)[-(1:3)]) {
+ 
+  histogram <- ggplot(table_zip, aes(x = .data[[col]])) +
+    geom_histogram(position = "identity", binwidth = 0.02, fill = "lightblue", color = "black") +
+    labs(x = col, y = "Count", title = paste("Histogram of", col)) +
+    theme_minimal()
+
+  print(histogram)
+}
+
+# ACS median HH income
+ggplot(table_zip, aes(x = ACS_median_HH_income)) +
+    geom_histogram(position = "identity", binwidth = 1000, fill = "lightblue", color = "black") +
+    labs(x = "ACS_median_HH_income", y = "Count", title = paste("Histogram of", "ACS_median_HH_income")) +
+    theme_minimal()
+
+for (col in colnames(table_county)[-(1:3)]) {
+ 
+  histogram <- ggplot(table_county, aes(x = .data[[col]])) +
+    geom_histogram(position = "identity", binwidth = 0.02, fill = "lightblue", color = "black") +
+    labs(x = col, y = "Count", title = paste("Histogram of", col)) +
+    theme_minimal()
+
+  print(histogram)
+}
+
+# ACS median HH income
+ggplot(table_county, aes(x = ACS_median_HH_income)) +
+    geom_histogram(position = "identity", binwidth = 1000, fill = "lightblue", color = "black") +
+    labs(x = "ACS_median_HH_income", y = "Count", title = paste("Histogram of", "ACS_median_HH_income")) +
+    theme_minimal()
+
+# CHR median HH income
+ggplot(table_county, aes(x = CHR_median_household_income)) +
+    geom_histogram(position = "identity", binwidth = 1000, fill = "lightblue", color = "black") +
+    labs(x = "CHR_median_household_income", y = "Count", title = paste("Histogram of", "CHR_median_household_income")) +
+    theme_minimal()
+
+# total population
+ggplot(table_county, aes(x = TOT_POP)) +
+    geom_histogram(position = "identity", binwidth = 100000, fill = "lightblue", color = "black") +
+    labs(x = "TOT_POP", y = "Count", title = paste("Histogram of", "TOT_POP")) +
+    theme_minimal()
+```
+
+############################################################
+############### Create Time Series Dataset #################
+############################################################
+
+```{r import and clean 2024 CHR dat}
+chr_file_2024 <- read.csv("F:\\Data_Science\\SDoH\\sdoh 2025 update\\2024 CHR CSV Analytic Data.csv", header = FALSE)[-1,] %>%
+  row_to_names(row_number = 1)
+
+chr_dictionary_2024 <- data.frame(rbind(
+  c("v036_rawvalue", "poor physical health days", "poor_physical_health_days"),
+  c("v042_rawvalue", "poor mental health days", "poor_mental_health_days"),
+  c("v132_rawvalue", "access to exercise opportunities", "prop_exercise_access"),
+  c("v133_rawvalue", "food environment index", "food_environ_index"),
+  c("v085_rawvalue", "uninsured", "prop_uninsured"),
+  c("v136_rawvalue", "severe housing problems", "prop_severe_housing_probs"),
+  c("v136_other_data_1", "percentage of households with high housing costs", "prop_high_housing_cost"),
+  c("v136_other_data_2", "percentage of households with overcrowding", "prop_overcrowding"),
+  c("v136_other_data_3", "percentage of households with lack of kitchen or plumbing facilities", "prop_no_kitchen_plumbing"),
+  c("v125_rawvalue", "air pollution: particulate matter", "air_pollution"),
+  c("v124_rawvalue", "drinking water violations", "drinking_water_violations"),
+  c("v166_rawvalue", "broadband access", "prop_broadband_access"),
+  c("v069_rawvalue", "some college", "prop_some_college"),
+  c("v168_rawvalue", "high school completion", "prop_high_school_diploma"),
+  c("v023_rawvalue", "unemployment", "prop_unemployment"),
+  c("v044_rawvalue", "income inequality", "income_inequality"),
+  c("v024_rawvalue", "children in poverty", "prop_children_in_poverty"),
+  c("v140_rawvalue", "social associations", "social_associations"),
+  c("v147_rawvalue", "life expectancy", "life_expectancy"),
+  c("v127_rawvalue", "premature age-adjusted mortality", "premature_mortality"),
+  c("v060_rawvalue", "diabetes prevalence", "diabetes_prevalence"),
+  c("v011_rawvalue", "adult obesity", "prop_adult_obesity"),
+  c("v083_rawvalue", "limited access to healthy foods", "prop_limited_healthy_food_access"),
+  c("v139_rawvalue", "food insecurity", "prop_food_insecurity"),
+  c("v009_rawvalue", "adult smoking", "prop_adult_smoking"),
+  c("v070_rawvalue", "physical inactivity", "prop_physical_inactivity"),
+  c("v154_rawvalue", "severe housing cost burden", "prop_severe_housing_cost"),
+  c("v063_rawvalue", "median household income", "median_household_income"),
+  c("v058_rawvalue", "proportion rural", "prop_rural")
+))
+colnames(chr_dictionary_2024) <- c("variable", "description", "name")
+
+chr_2024 <- chr_file_2024 %>%
+  select(fipscode,
+         all_of(chr_dictionary$variable)) %>%
+  mutate(across(everything(), as.numeric),
+         fipscode = as.character(fipscode))
+colnames(chr_2024) <- c("FIPS", chr_dictionary_2024$name)
+
+colnames(chr_2024)[-1] <- paste0("CHR_", colnames(chr_2024)[-1])
+```
+
+```{r create time series dataset}
+# import 2024 tables
+zip_2024 <- readRDS("F:\\Data_Science\\SDoH\\Tables\\master_zip_20240103.rds") 
+county_2024 <- readRDS("F:\\Data_Science\\SDoH\\Tables\\master_county_20240702.rds")  %>%
+  # add 2024 CHR data to 2024 dataset
+  left_join(chr_2024, by = "FIPS")
+
+# import 2025 tables
+zip_2025 <- readRDS("F:\\Data_Science\\SDoH\\sdoh 2025 update\\SDoH_zip_table 20250402.RDS") 
+county_2025 <- readRDS("F:\\Data_Science\\SDoH\\sdoh 2025 update\\SDoH_county_table 20250407.RDS") 
+
+# select column names that are common across all datasets
+zip_common_cols <- c("VERSION", intersect(names(zip_2024), names(zip_2025)))
+county_common_cols <-  c("VERSION", intersect(names(county_2024), names(county_2025)))
+
+# select column names that are new
+zip_new_cols <- colnames(zip_2025)[!colnames(zip_2025) %in% colnames(zip_2024)]
+county_new_cols <- colnames(county_2025)[!colnames(county_2025) %in% colnames(county_2024)]
+
+# standardize zip and county tables to have common columns
+zip_common_2024 <- zip_2024 %>% 
+  mutate(VERSION = "2024") %>%
+  select(all_of(zip_common_cols)) 
+  
+zip_common_2025 <- zip_2025 %>%
+  mutate(VERSION = "2025") %>%
+  select(all_of(zip_common_cols)) 
+
+zip_common <- rbind(zip_common_2024, zip_common_2025)
+
+county_common_2024 <- county_2024 %>% 
+  mutate(VERSION = "2024") %>%
+  select(all_of(county_common_cols))
+
+county_common_2025 <- county_2025 %>%
+  mutate(VERSION = "2025") %>%
+  select(all_of(county_common_cols)) 
+
+county_common <- rbind(county_common_2024, county_common_2025)
+
+# writeClipboard(colnames(zip_common))
+# writeClipboard(colnames(county_common))
+
+# saveRDS(zip_common, "F:\\Data_Science\\SDoH\\sdoh 2025 update\\SDoH_zip_timeseries 20250407.RDS")
+# saveRDS(county_common, "F:\\Data_Science\\SDoH\\sdoh 2025 update\\SDoH_county_timeseries 20250407.RDS")
+```
+
+```{r EDA for time series tables}
+get_EDA(zip_common)
+get_EDA(county_common)
+
+# compare feature distributions
+for (col in colnames(zip_common)[-(1:3)]) {
+ 
+  histogram <- ggplot(zip_common, aes(x = .data[[col]], fill = factor(VERSION))) +
+    geom_histogram(position = "identity", binwidth = 0.02, alpha = 0.7) +
+    labs(x = col, y = "Count", fill = "Version", title = paste("Histogram of", col)) +
+    theme_minimal()
+
+  print(histogram)
+}
+
+# ACS median HH income
+ggplot(zip_common, aes(x = ACS_median_HH_income, fill = factor(VERSION))) +
+    geom_histogram(position = "identity", binwidth = 1000, alpha = 0.7) +
+    labs(x = "ACS_median_HH_income", y = "Count", fill = "Version", title = paste("Histogram of", "ACS_median_HH_income")) +
+    theme_minimal()
+
+for (col in colnames(county_common)[-(1:4)]) {
+ 
+  histogram <- ggplot(county_common, aes(x = .data[[col]], fill = factor(VERSION))) +
+    geom_histogram(position = "identity", binwidth = 0.02, alpha = 0.7) +
+    labs(x = col, y = "Count", fill = "Version", title = paste("Histogram of", col)) +
+    theme_minimal()
+
+  print(histogram)
+}
+
+# ACS median HH income
+ggplot(county_common, aes(x = ACS_median_HH_income, fill = factor(VERSION))) +
+    geom_histogram(position = "identity", binwidth = 1000, alpha = 0.7) +
+    labs(x = "ACS_median_HH_income", y = "Count", fill = "Version", title = paste("Histogram of", "ACS_median_HH_income")) +
+    theme_minimal()
+
+# CHR median HH income
+ggplot(county_common, aes(x = CHR_median_household_income, fill = factor(VERSION))) +
+    geom_histogram(position = "identity", binwidth = 1000, alpha = 0.7) +
+    labs(x = "CHR_median_household_income", y = "Count", fill = "Version", title = paste("Histogram of", "CHR_median_household_income")) +
+    theme_minimal()
+
+# total population
+ggplot(county_common, aes(x = TOT_POP, fill = factor(VERSION))) +
+    geom_histogram(position = "identity", binwidth = 100000, alpha = 0.7) +
+    labs(x = "TOT_POP", y = "Count", fill = "Version", title = paste("Histogram of", "TOT_POP")) +
+    theme_minimal()
+```
+
+
+
+
+
+
+
+
+
+```{r EDA for ACS}
+
+
+# table with missing counts and frequency
+missing_summary <- data.frame(
+  column = colnames(zip_common_ACS_clean),
+  missing_count = sapply(zip_common_ACS_clean, function(x) sum(is.na(x))),
+  missing_percentage = round(sapply(zip_common_ACS_clean, function(x) mean(is.na(x)) * 100), 2)
+  ) %>%
+  arrange(desc(missing_percentage))
+missing_summary
+
+# bar graph: % of missing values by feature
+ggplot(missing_summary, aes(x = reorder(column, -missing_percentage), y = missing_percentage)) +
+      geom_bar(stat = "identity", fill = "darksalmon") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      labs(title = "Percentage of Missing Values by Variable",
+           x = "Variables",
+           y = "Percentage Missing") +
+      scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
+```
+
+
+
+
